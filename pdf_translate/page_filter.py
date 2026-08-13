@@ -37,11 +37,14 @@ class PageFilter:
     """
 
     def __init__(self, config, bg_unique_threshold=800,
-                 complex_ratio=0.7, cjk_ratio=0.85, art_text=True):
+                 complex_ratio=0.7, cjk_ratio=0.85, long_ratio=0.175,
+                 long_block_ratio=0.07, art_text=True):
         self.config = config
         self.bg_unique_threshold = bg_unique_threshold
         self.complex_ratio = complex_ratio
         self.cjk_ratio = cjk_ratio
+        self.long_ratio = long_ratio
+        self.long_block_ratio = long_block_ratio
         self.art_text = art_text
         self._classifiers = [self._default_classifier]
 
@@ -65,6 +68,13 @@ class PageFilter:
         total = len(basic)
         stats["complex_background"] = (complex_blocks, total)
         stats["cjk_blocks"] = (cjk_blocks, total)
+        page_dim = max(float(img_arr.shape[0]), float(img_arr.shape[1]))
+        long_blocks = sum(
+            1 for r in basic
+            if max(r.width, r.height) > self.long_ratio * page_dim
+            and len(r.text) >= 8
+        )
+        stats["long_blocks"] = (long_blocks, total)
 
         for classifier in self._classifiers:
             if classifier(img_arr, basic, stats):
@@ -76,9 +86,11 @@ class PageFilter:
     def _default_classifier(self, img_arr, basic, stats):
         complex_blocks, total = stats["complex_background"]
         cjk_blocks, _ = stats["cjk_blocks"]
+        long_blocks, _ = stats["long_blocks"]
         return (
             complex_blocks / total > self.complex_ratio
             and cjk_blocks / total < self.cjk_ratio
+            and long_blocks / total < self.long_block_ratio
         )
 
     @staticmethod
