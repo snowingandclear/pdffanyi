@@ -1,0 +1,6 @@
+rapidocr>=2.0
+pymupdf
+pillow
+openai
+requests
+numpy
