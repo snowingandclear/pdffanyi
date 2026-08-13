@@ -5,19 +5,22 @@ import tempfile
 from shutil import which
 
 from PIL import Image
+import numpy as np
 
 from pdf_translate.layout import group_lines
 from pdf_translate.ocr_engine import TesseractOCR
+from pdf_translate.page_filter import PageFilter
 from pdf_translate.pdfwriter import make_pdf
 from pdf_translate.renderer import Renderer
 from pdf_translate.translator import Translator
 
 
 class Pipeline:
-    def __init__(self, config, ocr=None, translator=None):
+    def __init__(self, config, ocr=None, translator=None, page_filter=None):
         self.config = config
         self.ocr = ocr or TesseractOCR()
         self.translator = translator or Translator()
+        self.page_filter = page_filter or PageFilter(config)
 
     def run(self, pdf_path, output_path, pages=None, dpi=None, debug=False, workdir=None):
         dpi = dpi or self.config.RENDER_DPI
@@ -38,15 +41,21 @@ class Pipeline:
                 png_path = self._render_page(pdf_path, page_no + 1, dpi, pages_dir)
                 print(f"[page {page_no + 1}] OCR...", flush=True)
                 regions = self.ocr.recognize(png_path, dpi=dpi)
-                kept = [
-                    r for r in regions
-                    if r.score >= self.config.OCR_CONFIDENCE_THRESHOLD
-                    and r.width >= 4 and r.height >= 4
-                    and not r.is_illustration_text()
-                ]
-                print(f"[page {page_no + 1}] {len(regions)} boxes, kept {len(kept)}", flush=True)
-                lines = group_lines(kept)
                 img = Image.open(png_path).convert("RGB")
+                img_arr = np.asarray(img)
+                decision = self.page_filter.apply(img_arr, regions)
+                kept = decision.kept
+                stats = decision.stats
+                stats_str = ", ".join(
+                    f"{k}={v[0]}/{v[1]}" for k, v in stats.items()
+                )
+                print(
+                    f"[page {page_no + 1}] {len(regions)} boxes, "
+                    f"kept {len(kept)} (插画页={decision.is_illustration_page}, "
+                    f"{stats_str})",
+                    flush=True,
+                )
+                lines = group_lines(kept)
                 if lines:
                     print(f"[page {page_no + 1}] translating {len(lines)} lines...", flush=True)
                     translated = self.translator.translate_lines([line.text for line in lines])

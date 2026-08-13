@@ -1,5 +1,6 @@
 from pdf_translate.layout import TextLine, group_lines
 from pdf_translate.ocr_engine import OCRRegion, TesseractOCR
+from pdf_translate.page_filter import PageDecision, PageFilter
 from pdf_translate.pipeline import Pipeline
 from pdf_translate.renderer import FontManager, Renderer
 from pdf_translate.translator import Translator
@@ -12,5 +13,7 @@ __all__ = [
     "Translator",
     "FontManager",
     "Renderer",
+    "PageDecision",
+    "PageFilter",
     "Pipeline",
 ]

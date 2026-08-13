@@ -27,24 +27,17 @@ class OCRRegion:
     def area(self):
         return self.width * self.height
 
-    def is_illustration_text(self):
-        """插图/装饰文字特征：日文字符占比低且混入大量拉丁/符号"""
-        import re
-
-        text = self.text
-        if not text:
-            return True
-        cjk = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
-        kana = len(re.findall(r"[\u3040-\u30ff]", text))
-        latin = len(re.findall(r"[A-Za-z]", text))
-        total = max(len(text), 1)
-        if cjk / total >= 0.5:
-            return False
-        if latin / total >= 0.4:
-            return True
-        if kana / total >= 0.5:
-            return False
-        return True
+    def bg_unique_colors(self, img_arr, pad=8):
+        """文字框周围背景的唯一颜色数"""
+        h, w = img_arr.shape[:2]
+        x0 = max(self.x_min - pad, 0)
+        x1 = min(self.x_max + pad, w)
+        y0 = max(self.y_min - pad, 0)
+        y1 = min(self.y_max + pad, h)
+        win = img_arr[y0:y1, x0:x1].reshape(-1, 3)
+        if win.shape[0] < 16:
+            return 0
+        return int(np.unique(win, axis=0).shape[0])
 
 
 class TesseractOCR:
