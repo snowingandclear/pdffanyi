@@ -119,11 +119,16 @@ class _RegionBuilder:
         xs = []
         ys = []
         text = ""
+        total_w = 0
+        conf_sum = 0.0
         min_conf = 1.0
         for t, (left, top, width, height), c in self.parts:
             xs.extend([left, left + width])
             ys.extend([top, top + height])
             text += t
+            w = max(len(t), 1)
+            total_w += w
+            conf_sum += c * w
             min_conf = min(min_conf, c)
         poly = [
             [min(xs), min(ys)],
@@ -131,4 +136,7 @@ class _RegionBuilder:
             [max(xs), max(ys)],
             [min(xs), max(ys)],
         ]
-        return OCRRegion(text, poly, min_conf, words=self.words)
+        score = conf_sum / total_w if total_w else min_conf
+        region = OCRRegion(text, poly, score, words=self.words)
+        region.min_word_conf = min_conf
+        return region

@@ -8,7 +8,7 @@ from PIL import Image
 import numpy as np
 
 from pdf_translate.layout import group_lines
-from pdf_translate.ocr_engine import TesseractOCR
+from pdf_translate.ocr_engine import OCRRegion, TesseractOCR
 from pdf_translate.page_filter import PageFilter
 from pdf_translate.pdfwriter import make_pdf
 from pdf_translate.renderer import Renderer
@@ -40,8 +40,9 @@ class Pipeline:
                 print(f"\n[page {page_no + 1}/{total}] rendering...", flush=True)
                 png_path = self._render_page(pdf_path, page_no + 1, dpi, pages_dir)
                 print(f"[page {page_no + 1}] OCR...", flush=True)
-                regions = self.ocr.recognize(png_path, dpi=dpi)
                 img = Image.open(png_path).convert("RGB")
+                regions = self.ocr.recognize(png_path, dpi=dpi)
+                regions = self._rescue_low_conf(regions, img, dpi)
                 img_arr = np.asarray(img)
                 decision = self.page_filter.apply(img_arr, regions)
                 kept = decision.kept
@@ -116,6 +117,60 @@ class Pipeline:
             except OSError:
                 pass
         print(f"\nDONE: {output_path} ({len(jpegs)} pages)")
+
+    def _rescue_low_conf(self, regions, img, dpi):
+        """低置信度长 CJK 行兜底: 裁出放大 2 倍重识别, 文本更可信则替换。
+
+        整行分数因个别单字被拉低时, 重识别常能救回该行
+        (沿用原框几何, 只替换文本与分数)。
+        """
+        import re as _re
+
+        cjk_re = _re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+        out = []
+        rescued = 0
+        for r in regions:
+            if r.score >= self.config.OCR_CONFIDENCE_THRESHOLD:
+                out.append(r)
+                continue
+            text = r.text.strip()
+            if not text or len(text) < 8:
+                out.append(r)
+                continue
+            if len(cjk_re.findall(text)) / len(text) < 0.5:
+                out.append(r)
+                continue
+            crop = img.crop((r.x_min, r.y_min, r.x_max, r.y_max))
+            crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                crop_path = f.name
+            crop.save(crop_path)
+            try:
+                resc = self.ocr.recognize(crop_path, dpi=dpi * 2)
+            finally:
+                os.remove(crop_path)
+            better = [
+                x for x in resc
+                if len(x.text) >= len(text) * 0.8
+                and x.score > r.score
+            ]
+            if better:
+                best = max(better, key=lambda x: x.score)
+                new_region = OCRRegion(
+                    r.poly.tolist(), best.text, best.score, words=best.words
+                )
+                new_region.min_word_conf = min(r.min_word_conf, best.min_word_conf)
+                out.append(new_region)
+                rescued += 1
+                print(
+                    f"[page] 重识别救回 1 行: {best.score:.0f}: {best.text[:30]}",
+                    flush=True,
+                )
+            else:
+                out.append(r)
+        if rescued:
+            print(f"[page] 低分行重识别救回 {rescued} 行", flush=True)
+        return out
 
     @staticmethod
     def _page_count(pdf_path):
