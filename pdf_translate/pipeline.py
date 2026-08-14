@@ -87,6 +87,7 @@ class Pipeline:
                         else:
                             renderer.draw_horizontal(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill)
                     renderer.sync()
+                    img = renderer.image
                     if debug:
                         dbg = os.path.join(workdir, f"_debug_{page_no + 1}.png")
                         img.save(dbg)
@@ -154,6 +155,10 @@ def main():
         print(f"input not found: {args.input}")
         sys.exit(1)
     output = args.output or os.path.splitext(args.input)[0] + "_translated.pdf"
+    if os.path.isdir(output):
+        output = os.path.join(
+            output, os.path.splitext(os.path.basename(args.input))[0] + "_translated.pdf"
+        )
     pages = None
     if args.start or args.end:
         pages = (args.start or 1, args.end or 10 ** 9)

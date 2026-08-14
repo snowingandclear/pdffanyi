@@ -110,7 +110,7 @@ class TesseractOCR:
 class _RegionBuilder:
     def __init__(self, text, box, conf):
         self.parts = [(text, box, conf)]
-        self.words = [(text, box, conf)]
+        self.words = []
 
     def add(self, text, box, conf):
         self.parts.append((text, box, conf))

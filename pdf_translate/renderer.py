@@ -34,12 +34,11 @@ class Renderer:
     def __init__(self, image):
         self.image = image
         self.arr = np.array(image.convert("RGB"), dtype=np.uint8)
-        self._ref = Image.fromarray(self.arr)
-        self.draw = ImageDraw.Draw(self._ref)
         self.fonts = FontManager()
 
     def sync(self):
-        self.image.paste(self._ref.convert("RGB"), (0, 0))
+        self.arr = np.asarray(self.arr, dtype=np.uint8)
+        self.image = Image.fromarray(self.arr)
 
     @staticmethod
     def _sample_bg(arr, x_min, y_min, x_max, y_max, pad=6):
@@ -63,18 +62,12 @@ class Renderer:
 
     def erase(self, x_min, y_min, x_max, y_max, words=None):
         bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
-        boxes = words or [(None, (x_min, y_min, x_max - x_min, y_max - y_min), None)]
-        for _w, (left, top, width, height), _c in boxes:
-            pad = 1 if words else 0
-            bx0 = max(left - pad, 0)
-            by0 = max(top - pad, 0)
-            bx1 = min(left + width + pad, self.image.width - 1)
-            by1 = min(top + height + pad, self.image.height - 1)
-            if bx1 <= bx0 or by1 <= by0:
-                continue
-            if not self._is_text_box(bx0, by0, bx1, by1, bg):
-                continue
-            self._erase_foreground(bx0, by0, bx1, by1, bg)
+        pad = 1
+        bx0 = max(x_min - pad, 0)
+        by0 = max(y_min - pad, 0)
+        bx1 = min(x_max + pad, self.arr.shape[1] - 1)
+        by1 = min(y_max + pad, self.arr.shape[0] - 1)
+        self._erase_foreground(bx0, by0, bx1, by1, bg)
 
     def _is_text_box(self, x0, y0, x1, y1, bg, max_fore_ratio=0.35):
         window = self.arr[y0:y1, x0:x1].astype(np.int32)
@@ -117,23 +110,26 @@ class Renderer:
         font_size = min(int(box_h), config.FONT_SIZE_MAX)
         font = self.fonts.get_font(font_size)
         while font_size > config.FONT_SIZE_MIN:
-            tw = self.draw.textlength(text, font=font)
-            if tw <= box_w:
+            if font.getlength(text) <= box_w:
                 break
             font_size -= 1
             font = self.fonts.get_font(font_size)
-        if self.draw.textlength(text, font=font) > box_w:
+        if font.getlength(text) > box_w:
             lines = self._wrap(text, font, box_w)
         else:
             lines = [text]
         line_h = max(font_size, 8) + 2
         total_h = len(lines) * line_h
         y = y_min + config.LINE_PADDING + max((box_h - total_h) // 2, 0)
+        tile = self.arr[y_min:y_max, x_min:x_max].copy()
+        tmp = Image.fromarray(tile)
+        d = ImageDraw.Draw(tmp)
         for line in lines:
-            tw = self.draw.textlength(line, font=font)
+            tw = font.getlength(line)
             x = x_min + config.LINE_PADDING + max((box_w - tw) // 2, 0)
-            self.draw.text((x, y), line, fill=fill, font=font)
+            d.text((x - x_min, y - y_min), line, fill=fill, font=font)
             y += line_h
+        self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
     def draw_vertical(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0)):
         box_w = max(x_max - x_min - config.LINE_PADDING * 2, 1)
@@ -152,20 +148,24 @@ class Renderer:
         col_h = font_size + 4
         cols = max(int(box_h // col_h), 1)
         col_x = x_min + config.LINE_PADDING + (box_w - font_size) // 2
+        tile = self.arr[y_min:y_max, x_min:x_max].copy()
+        tmp = Image.fromarray(tile)
+        d = ImageDraw.Draw(tmp)
         for start in range(0, len(chars), cols):
             column = chars[start : start + cols]
             y = y_min + config.LINE_PADDING + max((box_h - len(column) * col_h) // 2, 0)
             for ch in column:
-                self.draw.text((col_x, y), ch, fill=fill, font=font)
+                d.text((col_x - x_min, y - y_min), ch, fill=fill, font=font)
                 y += col_h
             col_x += font_size + 2
+        self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
     def _wrap(self, text, font, box_w):
         lines = []
         current = ""
         for ch in text:
             probe = current + ch
-            if self.draw.textlength(probe, font=font) <= box_w or not current:
+            if font.getlength(probe) <= box_w or not current:
                 current = probe
             else:
                 lines.append(current)
