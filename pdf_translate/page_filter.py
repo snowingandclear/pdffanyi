@@ -197,7 +197,8 @@ class PageFilter:
         w_ratio = line_w / max(page_w, 1)
         h_ratio = line.text_height / max(h_med, 1)
         if w_ratio >= self.text_width_ratio:
-            return True
+            if self._line_brightness(line, img_arr) >= 0.70:
+                return True
         bright = self._line_brightness(line, img_arr)
         group = self._find_group(line, groups)
         g_h_ratio = None
@@ -224,9 +225,12 @@ class PageFilter:
                              or self._ends_body_suffix(line.text))):
                     return True
         if (self.font_ratio_min <= h_ratio <= self.font_ratio_max
-                and bright >= self.bright_threshold
-                and (g_h_ratio is None or g_h_ratio >= 0.7)):
-            return True
+                and bright >= self.bright_threshold):
+            if len(group["lines"]) >= 2:
+                if g_h_ratio is None or g_h_ratio >= 0.7:
+                    return True
+            elif 0.9 <= h_ratio <= 1.25 and bright >= 0.80:
+                return True
         return False
 
     @staticmethod
