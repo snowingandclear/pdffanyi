@@ -80,7 +80,12 @@ class PageFilter:
             if classifier(img_arr, basic, stats):
                 return PageDecision(True, [], stats)
 
-        kept = [r for r in basic if not self._is_art_text(r.text)]
+        kept = [
+            r for r in basic
+            if not self._is_art_text(r.text)
+            and len(r.text) >= 3
+        ]
+        stats["skipped_illustration_text"] = (total - len(kept), total)
         return PageDecision(False, kept, stats)
 
     def _default_classifier(self, img_arr, basic, stats):
