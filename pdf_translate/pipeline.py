@@ -75,6 +75,13 @@ class Pipeline:
                         fill = renderer.text_color(
                             line.x_min, line.y_min, line.x_max, line.y_max
                         )
+                        text_height = line.text_height
+                        measured = renderer.measure_text_size(
+                            line.x_min, line.y_min, line.x_max, line.y_max,
+                            vertical=line.vertical,
+                        )
+                        if measured:
+                            text_height = measured
                         words = [
                             w for r in line.regions for w in r.words
                         ]
@@ -83,9 +90,9 @@ class Pipeline:
                             words=words,
                         )
                         if line.vertical:
-                            renderer.draw_vertical(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill)
+                            renderer.draw_vertical(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill, text_height=text_height)
                         else:
-                            renderer.draw_horizontal(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill)
+                            renderer.draw_horizontal(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill, text_height=text_height)
                     renderer.sync()
                     img = renderer.image
                     if debug:

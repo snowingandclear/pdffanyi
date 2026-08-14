@@ -104,60 +104,108 @@ class Renderer:
             return (255, 255, 255) if bg_lum < 128 else (0, 0, 0)
         return (0, 0, 0)
 
-    def draw_horizontal(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0)):
-        box_w = max(x_max - x_min - config.LINE_PADDING * 2, 1)
-        box_h = max(y_max - y_min - config.LINE_PADDING * 2, 1)
-        font_size = min(int(box_h), config.FONT_SIZE_MAX)
-        font = self.fonts.get_font(font_size)
-        while font_size > config.FONT_SIZE_MIN:
-            if font.getlength(text) <= box_w:
-                break
-            font_size -= 1
+    def measure_text_size(self, x_min, y_min, x_max, y_max, vertical=False):
+        """测量原文本墨迹范围: 横排=高度, 竖排=单列宽度, 作为译文字号基准."""
+        bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
+        window = self.arr[y_min:y_max, x_min:x_max].astype(np.int32)
+        if window.size == 0:
+            return None
+        dist = np.abs(window - np.asarray(bg, dtype=np.int32)).sum(axis=2)
+        mask = dist > 60
+        if vertical:
+            colcnt = mask.sum(axis=0)
+            cols = np.where(colcnt >= 2)[0]
+            if not len(cols):
+                return None
+            runs = np.split(cols, np.where(np.diff(cols) > 1)[0] + 1)
+            w = max(run[-1] - run[0] + 1 for run in runs)
+            return w if w <= x_max - x_min else None
+        rowcnt = mask.sum(axis=1)
+        rows = np.where(rowcnt >= 2)[0]
+        if not len(rows):
+            return None
+        h = rows[-1] - rows[0] + 1
+        return h if h <= y_max - y_min else None
+
+    def _ink_metrics(self, font):
+        bbox = font.getbbox("测", anchor="la")
+        return max(bbox[3] - bbox[1], 1), max(bbox[2] - bbox[0], 1)
+
+    def _fit_font(self, text, box_w, box_h, text_height=None):
+        start = text_height or box_h
+        font_size = max(min(int(start), config.FONT_SIZE_MAX), config.FONT_SIZE_MIN)
+        while True:
             font = self.fonts.get_font(font_size)
-        if font.getlength(text) > box_w:
-            lines = self._wrap(text, font, box_w)
-        else:
+            ink_h, _ = self._ink_metrics(font)
             lines = [text]
-        line_h = max(font_size, 8) + 2
-        total_h = len(lines) * line_h
-        y = y_min + config.LINE_PADDING + max((box_h - total_h) // 2, 0)
+            if font.getlength(text) > box_w:
+                lines = self._wrap(text, font, box_w)
+            total_h = len(lines) * ink_h + max(len(lines) - 1, 0) * 2
+            fits = total_h <= box_h and font.getlength(text) <= box_w
+            if fits or font_size <= config.FONT_SIZE_MIN:
+                return font, lines
+            font_size -= 1
+
+    def draw_horizontal(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0), text_height=None):
+        box_w = max(x_max - x_min, 1)
+        box_h = max(y_max - y_min, 1)
+        font, lines = self._fit_font(text, box_w, box_h, text_height)
+        ink_h, _ = self._ink_metrics(font)
+        line_h = ink_h + 2
+        total_h = len(lines) * ink_h + max(len(lines) - 1, 0) * 2
+        y = y_min + max((box_h - total_h) // 2, 0)
         tile = self.arr[y_min:y_max, x_min:x_max].copy()
         tmp = Image.fromarray(tile)
         d = ImageDraw.Draw(tmp)
         for line in lines:
-            tw = font.getlength(line)
-            x = x_min + config.LINE_PADDING + max((box_w - tw) // 2, 0)
-            d.text((x - x_min, y - y_min), line, fill=fill, font=font)
+            lb = font.getbbox(line, anchor="la")
+            ink_w = lb[2] - lb[0]
+            x = x_min + max((box_w - ink_w) // 2, 0)
+            d.text(
+                (x - x_min - lb[0], y - y_min - lb[1]),
+                line, fill=fill, font=font, anchor="la",
+            )
             y += line_h
         self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
-    def draw_vertical(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0)):
-        box_w = max(x_max - x_min - config.LINE_PADDING * 2, 1)
-        box_h = max(y_max - y_min - config.LINE_PADDING * 2, 1)
+    def draw_vertical(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0), text_height=None):
+        box_w = max(x_max - x_min, 1)
+        box_h = max(y_max - y_min, 1)
         chars = list(text)
-        font_size = int(box_w)
-        while font_size > config.FONT_SIZE_MIN:
+        start = text_height or box_w
+        font_size = max(min(int(start), config.FONT_SIZE_MAX), config.FONT_SIZE_MIN)
+        while True:
             font = self.fonts.get_font(font_size)
-            col_h = font_size + 4
+            ink_h, ink_w = self._ink_metrics(font)
+            col_h = ink_h + 2
             cols = max(int(box_h // col_h), 1)
             n_cols = (len(chars) + cols - 1) // cols
-            if n_cols * (font_size + 2) - 2 <= box_w:
+            fits = n_cols * (ink_w + 2) <= box_w
+            if fits or font_size <= config.FONT_SIZE_MIN:
                 break
             font_size -= 1
         font = self.fonts.get_font(font_size)
-        col_h = font_size + 4
+        ink_h, ink_w = self._ink_metrics(font)
+        col_h = ink_h + 2
         cols = max(int(box_h // col_h), 1)
-        col_x = x_min + config.LINE_PADDING + (box_w - font_size) // 2
+        n_cols = (len(chars) + cols - 1) // cols
+        total_w = n_cols * (ink_w + 2) - 2
+        col_x = x_min + max((box_w - total_w) // 2, 0)
         tile = self.arr[y_min:y_max, x_min:x_max].copy()
         tmp = Image.fromarray(tile)
         d = ImageDraw.Draw(tmp)
-        for start in range(0, len(chars), cols):
-            column = chars[start : start + cols]
-            y = y_min + config.LINE_PADDING + max((box_h - len(column) * col_h) // 2, 0)
+        for start_idx in range(0, len(chars), cols):
+            column = chars[start_idx : start_idx + cols]
+            total_h = len(column) * ink_h + max(len(column) - 1, 0) * 2
+            y = y_min + max((box_h - total_h) // 2, 0)
             for ch in column:
-                d.text((col_x - x_min, y - y_min), ch, fill=fill, font=font)
+                cb = font.getbbox(ch, anchor="la")
+                d.text(
+                    (col_x - x_min - cb[0], y - y_min - cb[1]),
+                    ch, fill=fill, font=font, anchor="la",
+                )
                 y += col_h
-            col_x += font_size + 2
+            col_x += ink_w + 2
         self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
     def _wrap(self, text, font, box_w):

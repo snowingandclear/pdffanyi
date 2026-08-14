@@ -21,6 +21,12 @@ class TextLine:
     def size(self):
         return self.x_max - self.x_min, self.y_max - self.y_min
 
+    @property
+    def text_height(self):
+        if self.vertical:
+            return max(r.width for r in self.regions)
+        return max(r.height for r in self.regions)
+
 
 def _overlap_ratio(a_y_min, a_y_max, b_y_min, b_y_max):
     lo = max(a_y_min, b_y_min)
