@@ -3,3 +3,8 @@ __pycache__/
 output/
 out/
 tests/
+*.pdf
+_debug_*.png
+pdffanyi_*/
+runtest*.pdf
+runtest*.log

@@ -1,50 +1,94 @@
 import json
-import random
 import re
 import time
 
 import requests
 
+GOOGLE_MIRRORS = [
+    "https://v2g.borber.top",
+    "https://translate.googleapis.com",
+]
 YOUDAO_URL = "https://aidemo.youdao.com/trans"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-REQUEST_GAP = 1.5
+REQUEST_GAP = 3.0
+MAX_BATCH_CHARS = 400
+MAX_BATCH_LINES = 12
 
 
 class Translator:
-    def __init__(self, api_key="", base_url="", model=""):
+    def __init__(self, api_key="", base_url="", model="", engine="google"):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": UA})
         self._last_request = 0.0
+        self.engine = engine
 
     @staticmethod
     def _is_limited(status):
         return status in ("103", "411", "429")
 
-    def _translate_text(self, text, src="ja", dst="zh-CHS"):
-        for attempt in range(4):
-            gap = REQUEST_GAP - (time.time() - self._last_request)
-            if gap > 0:
-                time.sleep(gap)
+    def _translate_text(self, text, src="ja", dst="zh-CN", attempts=4):
+        for attempt in range(attempts):
+            self._throttle()
             try:
-                resp = self.session.post(
-                    YOUDAO_URL,
-                    data={"q": text, "from": src, "to": dst},
-                    timeout=30,
-                )
-                self._last_request = time.time()
-                data = resp.json()
-                if isinstance(data, dict) and data.get("translation"):
-                    return data["translation"][0].strip()
-                status = data.get("errorCode") if isinstance(data, dict) else ""
-                if self._is_limited(status):
-                    print(f"[translate] 限流({status}), 等待 {4 * (attempt + 1)}s...")
-                    time.sleep(4 * (attempt + 1))
-                    continue
-                raise RuntimeError(f"有道接口异常: {str(data)[:80]}")
+                if self.engine == "google":
+                    result = self._translate_google(text, src, dst)
+                else:
+                    result = self._translate_youdao(text)
+                if result is not None:
+                    return result
             except Exception as e:
                 print(f"[translate] retry {attempt + 1}: {str(e)[:80]}")
                 time.sleep(2 ** attempt)
         return ""
+
+    def _throttle(self):
+        gap = REQUEST_GAP - (time.time() - self._last_request)
+        if gap > 0:
+            time.sleep(gap)
+        self._last_request = time.time()
+
+    def _translate_google(self, text, src, dst):
+        last_err = None
+        for mirror in GOOGLE_MIRRORS:
+            try:
+                resp = self.session.get(
+                    f"{mirror}/translate_a/single",
+                    params={
+                        "client": "gtx",
+                        "sl": src,
+                        "tl": dst,
+                        "dt": "t",
+                        "q": text,
+                    },
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data and isinstance(data[0], list):
+                    return "".join(
+                        part[0] for part in data[0] if part and part[0]
+                    ).strip()
+                raise RuntimeError(f"谷歌接口异常: {str(data)[:80]}")
+            except Exception as e:
+                last_err = e
+                print(f"[translate] 镜像 {mirror} 失败: {str(e)[:60]}")
+        raise RuntimeError(f"所有谷歌镜像失败: {str(last_err)[:60]}")
+
+    def _translate_youdao(self, text):
+        resp = self.session.post(
+            YOUDAO_URL,
+            data={"q": text, "from": "ja", "to": "zh-CHS"},
+            timeout=30,
+        )
+        data = resp.json()
+        if isinstance(data, dict) and data.get("translation"):
+            return data["translation"][0].strip()
+        status = data.get("errorCode") if isinstance(data, dict) else ""
+        if self._is_limited(status):
+            print(f"[translate] 限流({status}), 等待 12s...")
+            time.sleep(12)
+            return None
+        raise RuntimeError(f"有道接口异常: {str(data)[:80]}")
 
     def translate_lines(self, lines):
         if not lines:
@@ -53,7 +97,8 @@ class Translator:
         current_batch = []
         current_len = 0
         for line in lines:
-            if current_len + len(line) > 800 and current_batch:
+            if (current_len + len(line) > MAX_BATCH_CHARS
+                    or len(current_batch) >= MAX_BATCH_LINES) and current_batch:
                 translated.extend(self._translate_batch(current_batch))
                 current_batch = []
                 current_len = 0
@@ -69,8 +114,16 @@ class Translator:
             content = self._translate_text(payload)
         except Exception as e:
             print(f"[translate] batch failed: {str(e)[:80]}")
-            return [""] * len(lines)
-        return self._parse_batch(content, len(lines))
+            content = ""
+        translated = self._parse_batch(content, len(lines))
+        missing = [i for i, t in enumerate(translated) if not t]
+        if missing:
+            print(
+                f"[translate] {len(missing)}/{len(lines)} 行批量失败，逐行补译..."
+            )
+            for i in missing:
+                translated[i] = self._translate_text(lines[i], attempts=3)
+        return translated
 
     @staticmethod
     def _parse_batch(content, expected):

@@ -59,6 +59,13 @@ class Pipeline:
                 if lines:
                     print(f"[page {page_no + 1}] translating {len(lines)} lines...", flush=True)
                     translated = self.translator.translate_lines([line.text for line in lines])
+                    missing = sum(1 for zh in translated if not zh)
+                    if missing:
+                        print(
+                            f"[page {page_no + 1}] 警告: {missing}/{len(lines)} 行翻译失败, "
+                            f"该页将保留原文",
+                            flush=True,
+                        )
                     renderer = Renderer(img)
                     for line, zh in zip(lines, translated):
                         if not zh:
@@ -68,11 +75,18 @@ class Pipeline:
                         fill = renderer.text_color(
                             line.x_min, line.y_min, line.x_max, line.y_max
                         )
-                        renderer.erase(line.x_min, line.y_min, line.x_max, line.y_max)
+                        words = [
+                            w for r in line.regions for w in r.words
+                        ]
+                        renderer.erase(
+                            line.x_min, line.y_min, line.x_max, line.y_max,
+                            words=words,
+                        )
                         if line.vertical:
                             renderer.draw_vertical(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill)
                         else:
                             renderer.draw_horizontal(zh, line.x_min, line.y_min, line.x_max, line.y_max, fill=fill)
+                    renderer.sync()
                     if debug:
                         dbg = os.path.join(workdir, f"_debug_{page_no + 1}.png")
                         img.save(dbg)

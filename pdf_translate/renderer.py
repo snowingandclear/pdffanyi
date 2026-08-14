@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 import config
@@ -9,9 +10,15 @@ class FontManager:
     def __init__(self):
         self.font_path = None
         for candidate in config.FONT_CANDIDATES:
-            if os.path.exists(candidate):
-                self.font_path = candidate
-                break
+            if not os.path.exists(candidate):
+                continue
+            try:
+                font = ImageFont.truetype(candidate, 32)
+                if font.getbbox("测中")[2] - font.getbbox("测中")[0] > 0:
+                    self.font_path = candidate
+                    break
+            except Exception:
+                continue
         self._cache = {}
 
     def get_font(self, size):
@@ -26,14 +33,16 @@ class FontManager:
 class Renderer:
     def __init__(self, image):
         self.image = image
-        self.draw = ImageDraw.Draw(image)
+        self.arr = np.array(image.convert("RGB"), dtype=np.uint8)
+        self._ref = Image.fromarray(self.arr)
+        self.draw = ImageDraw.Draw(self._ref)
         self.fonts = FontManager()
 
-    @staticmethod
-    def _sample_bg(pil_image, x_min, y_min, x_max, y_max, pad=6):
-        import numpy as np
+    def sync(self):
+        self.image.paste(self._ref.convert("RGB"), (0, 0))
 
-        arr = np.asarray(pil_image.convert("RGB"), dtype=np.int32)
+    @staticmethod
+    def _sample_bg(arr, x_min, y_min, x_max, y_max, pad=6):
         h, w = arr.shape[:2]
         samples = []
         left = max(x_min - pad, 0)
@@ -52,16 +61,41 @@ class Renderer:
             return (255, 255, 255)
         return tuple(int(np.median(samples, axis=0)[i]) for i in range(3))
 
-    def erase(self, x_min, y_min, x_max, y_max):
-        bg = self._sample_bg(self.image, x_min, y_min, x_max, y_max)
-        self.draw.rectangle([x_min, y_min, x_max, y_max], fill=bg)
+    def erase(self, x_min, y_min, x_max, y_max, words=None):
+        bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
+        boxes = words or [(None, (x_min, y_min, x_max - x_min, y_max - y_min), None)]
+        for _w, (left, top, width, height), _c in boxes:
+            pad = 1 if words else 0
+            bx0 = max(left - pad, 0)
+            by0 = max(top - pad, 0)
+            bx1 = min(left + width + pad, self.image.width - 1)
+            by1 = min(top + height + pad, self.image.height - 1)
+            if bx1 <= bx0 or by1 <= by0:
+                continue
+            if not self._is_text_box(bx0, by0, bx1, by1, bg):
+                continue
+            self._erase_foreground(bx0, by0, bx1, by1, bg)
+
+    def _is_text_box(self, x0, y0, x1, y1, bg, max_fore_ratio=0.35):
+        window = self.arr[y0:y1, x0:x1].astype(np.int32)
+        dist = np.abs(window - np.asarray(bg, dtype=np.int32)).sum(axis=2)
+        return (dist > 60).mean() <= max_fore_ratio
+
+    def _erase_foreground(self, x0, y0, x1, y1, bg, diff_thresh=60):
+        window = self.arr[y0:y1, x0:x1].astype(np.int32)
+        dist = np.abs(window - np.asarray(bg, dtype=np.int32)).sum(axis=2)
+        mask = dist > diff_thresh
+        if not mask.any():
+            return
+        window[mask] = np.asarray(bg, dtype=np.int32)
+        self.arr[y0:y1, x0:x1] = window.astype(np.uint8)
 
     def text_color(self, x_min, y_min, x_max, y_max):
         import numpy as np
 
-        bg = self._sample_bg(self.image, x_min, y_min, x_max, y_max)
+        bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
         bg_lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
-        arr = np.asarray(self.image.convert("RGB"), dtype=np.int32)
+        arr = self.arr.astype(np.int32)
         interior = arr[y_min:y_max, x_min:x_max]
         if interior.size == 0:
             return (255, 255, 255) if bg_lum < 128 else (0, 0, 0)

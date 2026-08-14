@@ -7,10 +7,11 @@ import numpy as np
 
 
 class OCRRegion:
-    def __init__(self, text, poly, score):
+    def __init__(self, text, poly, score, words=None):
         self.text = text
         self.poly = np.asarray(poly, dtype=np.float32)
         self.score = float(score)
+        self.words = words or []
         xs = self.poly[:, 0]
         ys = self.poly[:, 1]
         self.x_min = int(xs.min())
@@ -100,6 +101,7 @@ class TesseractOCR:
                     pending_key = key
                 else:
                     builder.add(text, box, conf)
+                builder.words.append((text, box, conf))
         if builder is not None:
             regions.append(builder.to_region())
         return regions
@@ -108,6 +110,7 @@ class TesseractOCR:
 class _RegionBuilder:
     def __init__(self, text, box, conf):
         self.parts = [(text, box, conf)]
+        self.words = [(text, box, conf)]
 
     def add(self, text, box, conf):
         self.parts.append((text, box, conf))
@@ -128,4 +131,4 @@ class _RegionBuilder:
             [max(xs), max(ys)],
             [min(xs), max(ys)],
         ]
-        return OCRRegion(text, poly, min_conf)
+        return OCRRegion(text, poly, min_conf, words=self.words)

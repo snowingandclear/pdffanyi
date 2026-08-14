@@ -43,7 +43,9 @@ def group_lines(regions):
             ratio = _overlap_ratio(
                 region.y_min, region.y_max, line.y_min, line.y_max
             )
-            if ratio >= 0.6:
+            gap = _horizontal_gap(region, line)
+            max_h = max(region.height, line.y_max - line.y_min)
+            if ratio >= 0.6 and gap <= max(2 * max_h, 24):
                 line.union_with(region)
                 placed = True
                 break
@@ -57,3 +59,13 @@ def group_lines(regions):
     vertical_lines.sort(key=lambda l: (l.x_min, l.y_min))
     horizontal_lines.sort(key=lambda l: (l.y_min, l.x_min))
     return horizontal_lines + vertical_lines
+
+
+def _horizontal_gap(a, b):
+    left = max(a.x_min, b.x_min)
+    right = min(a.x_max, b.x_max)
+    if right >= left:
+        return 0
+    if a.is_vertical():
+        return max(a.y_min - b.y_max, b.y_min - a.y_max, 0)
+    return max(a.x_min - b.x_max, b.x_min - a.x_max, 0)
