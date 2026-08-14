@@ -42,11 +42,12 @@ class PageFilter:
     def __init__(self, config, bg_unique_threshold=800,
                  complex_ratio=0.7, cjk_ratio=0.85, long_ratio=0.175,
                  long_block_ratio=0.07, art_text=True,
-                 text_width_ratio=0.11, font_ratio_min=0.85,
+                 text_width_ratio=0.11, anchor_width_ratio=0.22,
+                 font_ratio_min=0.85,
                  font_ratio_max=1.6, bright_threshold=0.78,
                  group_align_tol=60, group_font_min=0.88,
                  group_bright_min=0.78, tail_bright_min=0.65,
-                 vertical_span_min=0.15):
+                 group_span_min=0.08, vertical_span_min=0.15):
         self.config = config
         self.bg_unique_threshold = bg_unique_threshold
         self.complex_ratio = complex_ratio
@@ -55,6 +56,7 @@ class PageFilter:
         self.long_block_ratio = long_block_ratio
         self.art_text = art_text
         self.text_width_ratio = text_width_ratio
+        self.anchor_width_ratio = anchor_width_ratio
         self.font_ratio_min = font_ratio_min
         self.font_ratio_max = font_ratio_max
         self.bright_threshold = bright_threshold
@@ -62,6 +64,7 @@ class PageFilter:
         self.group_font_min = group_font_min
         self.group_bright_min = group_bright_min
         self.tail_bright_min = tail_bright_min
+        self.group_span_min = group_span_min
         self.vertical_span_min = vertical_span_min
         self._classifiers = [self._default_classifier]
 
@@ -125,18 +128,26 @@ class PageFilter:
         - 竖排：纵向跨度 >= 页面高度 vertical_span_min（15%）
         软件界面/插画中的文字短小、密排、背景偏灰多色，
         与白纸黑字的正文长句在以上特征上可区分。
+
+        针对截图旁/插图上的孤立的标注（如 SAI 界面步骤标注
+        「①「ファイル」メニュー選択《」），追加正文锚规则：
+        中等宽度行（text_width_ratio ~ anchor_width_ratio）必须
+        与同栈中的正文宽行（>= anchor_width_ratio）相连，或属于
+        >= 3 行且纵向跨幅 >= group_span_min 的真实读列；
+        孤立的短行不得因单行字号规则或「ます」结尾而被放行。
         """
         if not lines:
             return lines
         h_med = sorted(l.text_height for l in lines)[len(lines) // 2]
         page_h, page_w = img_arr.shape[:2]
+        stacks = self._column_stacks(lines, page_w)
         groups = self._column_groups(
             [l for l in lines if not l.vertical], img_arr
         )
         out = []
         for line in lines:
             if not self._is_body_line(line, h_med, img_arr, page_h, page_w,
-                                      groups):
+                                      groups, stacks):
                 continue
             out.append(line)
         return out
@@ -189,18 +200,68 @@ class PageFilter:
                 return g
         return None
 
-    def _is_body_line(self, line, h_med, img_arr, page_h, page_w, groups):
+    def _column_stacks(self, lines, page_w):
+        """按纵向邻接把横排行聚成文栈（同一段落/标注的连续行）。
+
+        相邻判定：x 范围重叠 >= 较短行宽的一半，且纵向间距
+        <= 3 倍行高（允许轻微行框交叠）。用于判断某行是否
+        与正文宽行（>= anchor_width_ratio）处于同一段文字流。
+        """
+        stacks = []
+        for line in sorted(lines, key=lambda l: l.y_min):
+            if line.vertical:
+                continue
+            placed = None
+            for s in stacks:
+                prev = s["lines"][-1]
+                x_lo = max(line.x_min, prev.x_min)
+                x_hi = min(line.x_max, prev.x_max)
+                if x_hi <= x_lo:
+                    continue
+                short_w = min(line.x_max - line.x_min,
+                              prev.x_max - prev.x_min)
+                if (x_hi - x_lo) / max(short_w, 1) < 0.5:
+                    continue
+                gap = line.y_min - prev.y_max
+                if -0.5 * line.text_height <= gap <= 3.0 * max(
+                        line.text_height, prev.text_height):
+                    placed = s
+                    break
+            if placed is not None:
+                placed["lines"].append(line)
+            else:
+                stacks.append({"lines": [line]})
+        for s in stacks:
+            s_max = max(l.x_max - l.x_min for l in s["lines"])
+            s["max_w_ratio"] = s_max / max(page_w, 1)
+        return stacks
+
+    def _find_stack(self, line, stacks):
+        for s in stacks:
+            if any(member is line for member in s["lines"]):
+                return s
+        return None
+
+    def _is_body_line(self, line, h_med, img_arr, page_h, page_w, groups,
+                      stacks):
+        if self._is_repeat_text(line.text):
+            return False
         if line.vertical:
             v_span = (line.y_max - line.y_min) / max(page_h, 1)
             return v_span >= self.vertical_span_min
         line_w = line.x_max - line.x_min
         w_ratio = line_w / max(page_w, 1)
         h_ratio = line.text_height / max(h_med, 1)
-        if w_ratio >= self.text_width_ratio:
-            if self._line_brightness(line, img_arr) >= 0.70:
-                return True
         bright = self._line_brightness(line, img_arr)
         group = self._find_group(line, groups)
+        stack = self._find_stack(line, stacks)
+        anchored = stack is not None and stack["max_w_ratio"] >= self.anchor_width_ratio
+        if w_ratio >= self.text_width_ratio:
+            if bright >= 0.70:
+                if (w_ratio >= self.anchor_width_ratio
+                        or anchored
+                        or self._is_read_column(group, page_h)):
+                    return True
         g_h_ratio = None
         if group is not None:
             g_h_ratio = group["h_med"] / max(h_med, 1)
@@ -215,23 +276,51 @@ class PageFilter:
             if 0 <= idx <= last - 1:
                 if (h_ratio >= 0.70
                         and bright >= self.bright_threshold
-                        and (prev is None or gap < 1.6 * line.text_height)):
+                        and ((prev is not None and gap < 1.6 * line.text_height)
+                             or (prev is None
+                                 and (anchored
+                                      or self._is_read_column(group, page_h))))):
                     return True
             elif idx == last and len(group["lines"]) > 1:
+                span_ok = ((group["y_max"] - group["y_min"]) / max(page_h, 1)
+                           >= self.group_span_min)
                 if (h_ratio >= 0.55
                         and bright >= self.tail_bright_min
                         and g_h_ratio >= 0.7
+                        and span_ok
                         and (gap is None or gap > 1.5 * line.text_height
                              or self._ends_body_suffix(line.text))):
                     return True
         if (self.font_ratio_min <= h_ratio <= self.font_ratio_max
                 and bright >= self.bright_threshold):
             if len(group["lines"]) >= 2:
-                if g_h_ratio is None or g_h_ratio >= 0.7:
+                if (g_h_ratio is None or g_h_ratio >= 0.7) and (
+                        anchored or self._is_read_column(group, page_h)):
                     return True
             elif 0.9 <= h_ratio <= 1.25 and bright >= 0.80:
-                return True
+                if anchored:
+                    return True
         return False
+
+    def _is_read_column(self, group, page_h):
+        if group is None or len(group["lines"]) < 3:
+            return False
+        return ((group["y_max"] - group["y_min"]) / max(page_h, 1)
+                >= self.group_span_min)
+
+    @staticmethod
+    def _is_repeat_text(text, min_len=15, max_unique_ratio=0.75):
+        """装饰边框/插图文字 OCR 幻觉：长行中重复假名/符号二元组占比过高。
+
+        目录缩略图边框、插画装饰线等被 OCR 识别为大量重复字符
+        （如「にににだどどここ」），正文长句的二元组几乎不重复。
+        """
+        if len(text) < min_len:
+            return False
+        bigrams = [text[i:i + 2] for i in range(len(text) - 1)]
+        if not bigrams:
+            return False
+        return len(set(bigrams)) / len(bigrams) <= max_unique_ratio
 
     @staticmethod
     def _ends_body_suffix(text):
