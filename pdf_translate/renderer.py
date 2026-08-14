@@ -159,10 +159,8 @@ class Renderer:
         d = ImageDraw.Draw(tmp)
         for line in lines:
             lb = font.getbbox(line, anchor="la")
-            ink_w = lb[2] - lb[0]
-            x = x_min + max((box_w - ink_w) // 2, 0)
             d.text(
-                (x - x_min - lb[0], y - y_min - lb[1]),
+                (-lb[0], y - y_min - lb[1]),
                 line, fill=fill, font=font, anchor="la",
             )
             y += line_h
@@ -190,7 +188,7 @@ class Renderer:
         cols = max(int(box_h // col_h), 1)
         n_cols = (len(chars) + cols - 1) // cols
         total_w = n_cols * (ink_w + 2) - 2
-        col_x = x_min + max((box_w - total_w) // 2, 0)
+        col_x = x_min
         tile = self.arr[y_min:y_max, x_min:x_max].copy()
         tmp = Image.fromarray(tile)
         d = ImageDraw.Draw(tmp)
