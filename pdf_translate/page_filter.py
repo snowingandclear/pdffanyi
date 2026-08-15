@@ -268,15 +268,18 @@ class PageFilter:
                         lab[cy, cx + 1] = cur
                         stack.append((cy, cx + 1))
         regions = []
+        page_area = max(h * w * step * step, 1)
         for i in range(1, cur + 1):
             ys, xs = np.where(lab == i)
             area = len(xs) * step * step
             if area < min_area:
                 continue
-            regions.append(
-                (int(xs.min() * step), int(ys.min() * step),
+            r = (int(xs.min() * step), int(ys.min() * step),
                  int(xs.max() * step + step), int(ys.max() * step + step))
-            )
+            if ((r[2] - r[0]) * (r[3] - r[1])
+                    > page_area * getattr(self.config, "ART_REGION_MAX_RATIO", 0.55)):
+                continue
+            regions.append(r)
         return regions
 
     def _inside_art_region(self, line, art_regions):
@@ -541,11 +544,25 @@ class PageFilter:
         complex_blocks, total = stats["complex_background"]
         cjk_blocks, _ = stats["cjk_blocks"]
         long_blocks, _ = stats["long_blocks"]
-        return (
+        if not (
             complex_blocks / total > self.complex_ratio
             and cjk_blocks / total < self.cjk_ratio
             and long_blocks / total < self.long_block_ratio
-        )
+        ):
+            return False
+        page_w = max(img_arr.shape[1], 1)
+        body_candidates = [
+            r for r in basic
+            if (r.x_max - r.x_min) >= self.text_width_ratio * page_w
+            and len(CJK_RE.findall(r.text)) >= 8
+        ]
+        if body_candidates:
+            for r in body_candidates:
+                r_ratio = (r.y_max - r.y_min) / max(img_arr.shape[0], 1)
+                if (r_ratio <= 0.08
+                        and self._line_brightness(r, img_arr) >= 0.70):
+                    return False
+        return True
 
     @staticmethod
     def _is_pure_kana_junk(text, min_len=8):
