@@ -158,8 +158,12 @@ class PageFilter:
         for line in lines:
             if not self._is_body_line(line, h_med, img_arr, page_h, page_w,
                                       groups, stacks):
+                w_ratio = (line.x_max - line.x_min) / max(page_w, 1)
+                bright = self._line_brightness(line, img_arr)
                 if (getattr(self.config, "UI_LABEL_TRANSLATE", False)
                         and self._is_ui_label(line, img_arr, out)):
+                    out.append(line)
+                elif self._is_step_annotation(line, w_ratio, bright):
                     out.append(line)
                 continue
             out.append(line)
@@ -305,6 +309,35 @@ class PageFilter:
             and line.x_max <= x1 and line.y_max <= y1
             for x0, y0, x1, y1 in skip_regions
         )
+
+    def _is_step_annotation(self, line, w_ratio, bright):
+        """页面背景上的步序/圈注（插画与截图旁的说明性短标注）。
+
+        区别于截图内面板文本：行框在页面背景上，为白底、中等
+        宽度、带圈序号或动词收尾。阈值走 config.STEP_ANNOTATION_*。
+        """
+        text = line.text
+        if not text or line.vertical:
+            return False
+        if not (3 <= len(text) <= 26):
+            return False
+        if not (30 <= line.text_height <= 180):
+            return False
+        if not (0.05 <= w_ratio <= 0.35):
+            return False
+        if bright < getattr(self.config, "STEP_ANNOTATION_BRIGHT_MIN", 0.72):
+            return False
+        if re.match(
+            r"^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳●○◎]",
+            text,
+        ):
+            return True
+        return bool(re.search(
+            r"(しました|ました|します|しています|しました。|します。"
+            r"|なさい|ください|しよう|選択|設定|作成|変更|削除|追加"
+            r"|確認|描く|塗る|開く)$",
+            text,
+        ))
 
     def _is_band_title(self, line, w_ratio, bright):
         """彩色横条上的章节大标题（白字/亮字，非白底）。
@@ -541,8 +574,13 @@ class PageFilter:
 
         目录缩略图边框、插画装饰线等被 OCR 识别为大量重复字符
         （如「にににだどどここ」），正文长句的二元组几乎不重复。
+        例外：行内出现两个以上的不同圈序号（④…⑤…）说明是
+        多段圈注被并成一行（重复的是正常短语），不是幻觉。
         """
         if len(text) < min_len:
+            return False
+        if len(set(re.findall(r"[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]",
+                              text))) >= 2:
             return False
         bigrams = [text[i:i + 2] for i in range(len(text) - 1)]
         if not bigrams:
