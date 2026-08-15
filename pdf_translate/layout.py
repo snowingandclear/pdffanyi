@@ -51,7 +51,7 @@ def group_lines(regions):
             )
             gap = _horizontal_gap(region, line)
             max_h = max(region.height, line.y_max - line.y_min)
-            if ratio >= 0.6 and gap <= max(2 * max_h, 24):
+            if ratio >= 0.6 and gap <= max(int(0.5 * max_h), 24):
                 line.union_with(region)
                 placed = True
                 break
