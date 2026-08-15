@@ -158,7 +158,8 @@ class PageFilter:
         for line in lines:
             if not self._is_body_line(line, h_med, img_arr, page_h, page_w,
                                       groups, stacks):
-                if self._is_ui_label(line, img_arr, out):
+                if (getattr(self.config, "UI_LABEL_TRANSLATE", False)
+                        and self._is_ui_label(line, img_arr, out)):
                     out.append(line)
                 continue
             out.append(line)
@@ -166,6 +167,10 @@ class PageFilter:
         if art:
             out = [l for l in out
                    if not self._inside_art_region(l, art)]
+        skip = getattr(self.config, "SKIP_REGIONS_MANUAL", {}).get(page_no, [])
+        if skip:
+            out = [l for l in out
+                   if not self._inside_skip_region(l, skip)]
         return out
 
     def _is_ui_label(self, line, img_arr, kept):
@@ -280,6 +285,15 @@ class PageFilter:
         return any(
             x0 <= cx <= x1 and y0 <= cy <= y1
             for x0, y0, x1, y1 in art_regions
+        )
+
+    @staticmethod
+    def _inside_skip_region(line, skip_regions):
+        """行框完整包含于手动跳过区内才丢弃（区框较紧，避免误伤边缘正文）"""
+        return any(
+            x0 <= line.x_min and y0 <= line.y_min
+            and line.x_max <= x1 and line.y_max <= y1
+            for x0, y0, x1, y1 in skip_regions
         )
 
     @staticmethod

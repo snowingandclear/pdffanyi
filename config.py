@@ -20,6 +20,18 @@ ART_REGIONS_MANUAL = {
     13: [(2552, 2544, 3872, 3680)],
 }
 
+# 软件界面截图内的面板/按钮短标签是否翻译。
+# False = 截图内文本一律保留日文（只翻书籍正文与插画旁标注）
+UI_LABEL_TRANSLATE = False
+
+# 指定区域内的文字一律不翻（手动精确框，行框完整包含于区域内才丢弃）。
+# 用于自动/插画区检测覆盖不到的情况，例如截图窗口顶部菜单栏、
+# 被正文规则误放行的面板整行。按页码配置，无需改代码。
+SKIP_REGIONS_MANUAL = {
+    12: [(653, 3837, 2769, 4155)],   # 底部 SAI 窗口顶部菜单栏误读行
+    13: [(2360, 2099, 3134, 2200)],  # 面板整行误读「符圧:較濃度図サイズ較混色」
+}
+
 FONT_CANDIDATES = [
     "/system/fonts/NotoSansCJK-Regular.ttc",
     "/system/fonts/NotoSansSC-Regular.otf",
