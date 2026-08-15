@@ -105,6 +105,10 @@ class PageFilter:
             if not self._is_art_text(r.text)
             and len(r.text) >= 3
         ]
+        for r in kept:
+            stripped = self._strip_repeat_tail(r.text)
+            if stripped:
+                r.text = stripped
         stats["skipped_illustration_text"] = (total - len(kept), total)
         lines = self.filter_lines(group_lines(kept), img_arr)
         kept = [r for line in lines for r in line.regions]
@@ -309,6 +313,24 @@ class PageFilter:
                 >= self.group_span_min)
 
     @staticmethod
+    def _strip_repeat_tail(text, min_len=8, max_unique_ratio=0.75):
+        """剥离 OCR 把目录点线/装饰线误识为连续重复假名的幻影尾部。
+
+        只删尾部重复段(长度>=min_len 且二元组去重率低), 保留真条目,
+        如「線画の作成コーニュレアアルにアニュー...」→「線画の作成」。
+        """
+        for start in range(len(text) - 1, 0, -1):
+            seg = text[start:]
+            if len(seg) < min_len:
+                continue
+            bigrams = [seg[i:i + 2] for i in range(len(seg) - 1)]
+            if not bigrams:
+                continue
+            if len(set(bigrams)) / len(bigrams) <= max_unique_ratio:
+                return text[:start]
+        return text
+
+    @staticmethod
     def _is_repeat_text(text, min_len=15, max_unique_ratio=0.75):
         """装饰边框/插图文字 OCR 幻觉：长行中重复假名/符号二元组占比过高。
 
@@ -372,5 +394,8 @@ class PageFilter:
         if (cjk + kana) / total >= 0.35 and latin / total < 0.4:
             return False
         if latin / total >= 0.4:
+            runs = re.findall(r"[\u3040-\u30ff\u3400-\u9fff]+", text)
+            if runs and len(max(runs, key=len)) >= 4:
+                return False
             return True
         return True
