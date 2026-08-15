@@ -176,7 +176,9 @@ class PageFilter:
         ):
             return False
         h = line.text_height
-        if h < 22 or h > 400:
+        if h < 22 or h > 160:
+            return False
+        if line.x_max - line.x_min > 900:
             return False
         if self._line_brightness(line, img_arr) < 0.50:
             return False
