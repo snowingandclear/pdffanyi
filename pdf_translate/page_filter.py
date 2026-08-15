@@ -67,13 +67,14 @@ class PageFilter:
         self.group_span_min = group_span_min
         self.vertical_span_min = vertical_span_min
         self._classifiers = [self._default_classifier]
+        self._art_regions_cache = {}
 
     def add_classifier(self, fn):
         """追加页面分类器 fn(img_arr, regions) -> bool"""
         self._classifiers.append(fn)
         return self
 
-    def apply(self, img_arr, regions):
+    def apply(self, img_arr, regions, page_no=None):
         basic = [
             r for r in regions
             if r.score >= self.config.OCR_CONFIDENCE_THRESHOLD
@@ -113,14 +114,14 @@ class PageFilter:
                 r.text = ""
         kept = [r for r in kept if r.text]
         stats["skipped_illustration_text"] = (total - len(kept), total)
-        lines = self.filter_lines(group_lines(kept), img_arr)
+        lines = self.filter_lines(group_lines(kept), img_arr, page_no)
         kept = [r for line in lines for r in line.regions]
         stats["skipped_embedded_text"] = (
             total - len(kept), total
         )
         return PageDecision(False, kept, stats)
 
-    def filter_lines(self, lines, img_arr):
+    def filter_lines(self, lines, img_arr, page_no=None):
         """过滤嵌入图片中的文字（插画标注/软件界面/面板标签等）。
 
         判定依据（正文特征，命中任一即保留）：
@@ -142,6 +143,8 @@ class PageFilter:
         与同栈中的正文宽行（>= anchor_width_ratio）相连，或属于
         >= 3 行且纵向跨幅 >= group_span_min 的真实读列；
         孤立的短行不得因单行字号规则或「ます」结尾而被放行。
+
+        最后一关：彩色插画区域（原画/大图）内的文字一律不翻。
         """
         if not lines:
             return lines
@@ -159,6 +162,10 @@ class PageFilter:
                     out.append(line)
                 continue
             out.append(line)
+        art = self._art_regions(img_arr, page_no)
+        if art:
+            out = [l for l in out
+                   if not self._inside_art_region(l, art)]
         return out
 
     def _is_ui_label(self, line, img_arr, kept):
@@ -187,6 +194,93 @@ class PageFilter:
         if self._overlaps_kept(line, kept):
             return False
         return True
+
+    def _art_regions(self, img_arr, page_no=None):
+        """彩色插画区域检测（原画/大图），缓存按页。
+
+        流程: 降采样 -> 饱和度掩码 -> 二值膨胀 -> 连通域 ->
+        面积 >= ART_REGION_MIN_AREA 的组件即插画区。
+        阈值/开关在 config（ART_REGION_*）；若某个页在
+        ART_REGIONS_MANUAL 中配置了区域，则手动区优先
+        （替换自动检测），新页面只需改 config 无需改代码。
+
+        手动区先优先，避免把大截图/工具条误判为插画。
+        """
+        if not getattr(self.config, "ART_REGION_ENABLED", True):
+            return []
+        if page_no in self._art_regions_cache:
+            return self._art_regions_cache[page_no]
+        manual = getattr(self.config, "ART_REGIONS_MANUAL", {}).get(
+            page_no)
+        regions = (
+            list(manual)
+            if manual is not None
+            else self._detect_art_regions(img_arr)
+        )
+        self._art_regions_cache[page_no] = regions
+        return regions
+
+    def _detect_art_regions(self, img_arr):
+        step = getattr(self.config, "ART_REGION_STEP", 8)
+        sat_th = getattr(self.config, "ART_REGION_SAT", 0.22)
+        min_mx = getattr(self.config, "ART_REGION_MIN_MX", 0.12)
+        dilate = getattr(self.config, "ART_REGION_DILATE", 1)
+        min_area = getattr(self.config, "ART_REGION_MIN_AREA", 300000)
+        rgb = img_arr[::step, ::step].astype(np.float32) / 255.0
+        mx = rgb.max(axis=2)
+        mn = rgb.min(axis=2)
+        sat = np.where(mx > min_mx, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+        mask = sat > sat_th
+        for _ in range(dilate):
+            n = np.zeros_like(mask)
+            n[1:, :] |= mask[:-1, :]
+            n[:-1, :] |= mask[1:, :]
+            n[:, 1:] |= mask[:, :-1]
+            n[:, :-1] |= mask[:, 1:]
+            mask |= n
+        h, w = mask.shape
+        lab = np.zeros((h, w), dtype=np.int32)
+        cur = 0
+        for y in range(h):
+            for x in range(w):
+                if not mask[y, x] or lab[y, x]:
+                    continue
+                cur += 1
+                lab[y, x] = cur
+                stack = [(y, x)]
+                while stack:
+                    cy, cx = stack.pop()
+                    if cy > 0 and mask[cy - 1, cx] and not lab[cy - 1, cx]:
+                        lab[cy - 1, cx] = cur
+                        stack.append((cy - 1, cx))
+                    if cy < h - 1 and mask[cy + 1, cx] and not lab[cy + 1, cx]:
+                        lab[cy + 1, cx] = cur
+                        stack.append((cy + 1, cx))
+                    if cx > 0 and mask[cy, cx - 1] and not lab[cy, cx - 1]:
+                        lab[cy, cx - 1] = cur
+                        stack.append((cy, cx - 1))
+                    if cx < w - 1 and mask[cy, cx + 1] and not lab[cy, cx + 1]:
+                        lab[cy, cx + 1] = cur
+                        stack.append((cy, cx + 1))
+        regions = []
+        for i in range(1, cur + 1):
+            ys, xs = np.where(lab == i)
+            area = len(xs) * step * step
+            if area < min_area:
+                continue
+            regions.append(
+                (int(xs.min() * step), int(ys.min() * step),
+                 int(xs.max() * step + step), int(ys.max() * step + step))
+            )
+        return regions
+
+    def _inside_art_region(self, line, art_regions):
+        cx = (line.x_min + line.x_max) // 2
+        cy = (line.y_min + line.y_max) // 2
+        return any(
+            x0 <= cx <= x1 and y0 <= cy <= y1
+            for x0, y0, x1, y1 in art_regions
+        )
 
     @staticmethod
     def _overlaps_kept(line, kept):

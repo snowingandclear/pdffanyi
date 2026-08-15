@@ -44,7 +44,7 @@ class Pipeline:
                 regions = self.ocr.recognize(png_path, dpi=dpi)
                 regions = self._rescue_low_conf(regions, img, dpi)
                 img_arr = np.asarray(img)
-                decision = self.page_filter.apply(img_arr, regions)
+                decision = self.page_filter.apply(img_arr, regions, page_no + 1)
                 kept = decision.kept
                 stats = decision.stats
                 stats_str = ", ".join(
