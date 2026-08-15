@@ -299,6 +299,26 @@ class PageFilter:
             for x0, y0, x1, y1 in skip_regions
         )
 
+    def _is_band_title(self, line, w_ratio, bright):
+        """彩色横条上的章节大标题（白字/亮字，非白底）。
+
+        区别于界面窗口标题栏/面板行：要求超宽、字号大、
+        有可见亮字、日文占比足，阈值见 config.BAND_TITLE_*
+        """
+        min_h = getattr(self.config, "BAND_TITLE_MIN_H", 100)
+        min_bright = getattr(self.config, "BAND_TITLE_MIN_BRIGHT", 0.18)
+        min_score = getattr(self.config, "BAND_TITLE_MIN_CJK_SCORE", 0.45)
+        if w_ratio < getattr(self.config, "BAND_TITLE_MIN_W_RATIO", 0.22):
+            return False
+        if line.text_height < min_h or bright < min_bright:
+            return False
+        total = max(len(line.text), 1)
+        score = (
+            len(re.findall(r"[\u3400-\u9fff]", line.text)) * 2
+            + len(re.findall(r"[\u3040-\u30ff]", line.text))
+        ) / total
+        return score >= min_score
+
     @staticmethod
     def _overlaps_kept(line, kept):
         for k in kept:
@@ -423,6 +443,8 @@ class PageFilter:
                         or anchored
                         or self._is_read_column(group, page_h)):
                     return True
+            if self._is_band_title(line, w_ratio, bright):
+                return True
         g_h_ratio = None
         if group is not None:
             g_h_ratio = group["h_med"] / max(h_med, 1)
@@ -560,7 +582,7 @@ class PageFilter:
             for r in body_candidates:
                 r_ratio = (r.y_max - r.y_min) / max(img_arr.shape[0], 1)
                 if (r_ratio <= 0.08
-                        and self._line_brightness(r, img_arr) >= 0.70):
+                        and self._line_brightness(r, img_arr) >= 0.25):
                     return False
         return True
 

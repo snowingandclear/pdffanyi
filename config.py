@@ -25,6 +25,12 @@ ART_REGIONS_MANUAL = {
 # False = 截图内文本一律保留日文（只翻书籍正文与插画旁标注）
 UI_LABEL_TRANSLATE = False
 
+# 彩色横条上的章节大标题（白字/亮字非白底）翻译条件
+BAND_TITLE_MIN_W_RATIO = 0.22
+BAND_TITLE_MIN_H = 100
+BAND_TITLE_MIN_BRIGHT = 0.18
+BAND_TITLE_MIN_CJK_SCORE = 0.45
+
 # 指定区域内的文字一律不翻（手动精确框，行框完整包含于区域内才丢弃）。
 # 用于自动/插画区检测覆盖不到的情况，例如截图窗口顶部菜单栏、
 # 被正文规则误放行的面板整行。按页码配置，无需改代码。
