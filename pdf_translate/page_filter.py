@@ -103,7 +103,7 @@ class PageFilter:
         kept = [
             r for r in basic
             if not self._is_art_text(r.text)
-            and len(r.text) >= 3
+            and len(r.text) >= 2
         ]
         for r in kept:
             stripped = self._strip_repeat_tail(r.text)
@@ -155,9 +155,50 @@ class PageFilter:
         for line in lines:
             if not self._is_body_line(line, h_med, img_arr, page_h, page_w,
                                       groups, stacks):
+                if self._is_ui_label(line, img_arr, out):
+                    out.append(line)
                 continue
             out.append(line)
         return out
+
+    def _is_ui_label(self, line, img_arr, kept):
+        """界面标签兜底: 插画/截图旁的按钮、面板短标签原位保留翻译。
+
+        要求: 纯假名/汉字(无拉丁数字符号)、可读字号、对比度尚可,
+        且与保留的正文行无重叠(避免盖住正文)。
+        """
+        text = line.text
+        if not text or len(text) < 2 or len(text) > 12:
+            return False
+        if re.search(
+            r"[^\u3040-\u30ff\u3400-\u9fff\u30fc|・/〔〕【】{}()（）]",
+            text,
+        ):
+            return False
+        h = line.text_height
+        if h < 22 or h > 400:
+            return False
+        if self._line_brightness(line, img_arr) < 0.50:
+            return False
+        if self._ends_body_suffix(text) and h < 60:
+            return False
+        if self._overlaps_kept(line, kept):
+            return False
+        return True
+
+    @staticmethod
+    def _overlaps_kept(line, kept):
+        for k in kept:
+            x_lo = max(line.x_min, k.x_min)
+            x_hi = min(line.x_max, k.x_max)
+            y_lo = max(line.y_min, k.y_min)
+            y_hi = min(line.y_max, k.y_max)
+            if x_lo < x_hi and y_lo < y_hi:
+                inter = (x_hi - x_lo) * (y_hi - y_lo)
+                area = max((line.x_max - line.x_min) * (line.y_max - line.y_min), 1)
+                if inter / area > 0.4:
+                    return True
+        return False
 
     def _column_groups(self, lines, img_arr):
         """按 x_min 容差与 y 邻近把横排行聚成读列（正文段落/面板列）"""
