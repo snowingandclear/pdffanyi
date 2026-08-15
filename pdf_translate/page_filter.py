@@ -109,6 +109,9 @@ class PageFilter:
             stripped = self._strip_repeat_tail(r.text)
             if stripped:
                 r.text = stripped
+            if r.text and self._is_pure_kana_junk(r.text):
+                r.text = ""
+        kept = [r for r in kept if r.text]
         stats["skipped_illustration_text"] = (total - len(kept), total)
         lines = self.filter_lines(group_lines(kept), img_arr)
         kept = [r for line in lines for r in line.regions]
@@ -313,21 +316,40 @@ class PageFilter:
                 >= self.group_span_min)
 
     @staticmethod
-    def _strip_repeat_tail(text, min_len=8, max_unique_ratio=0.75):
-        """剥离 OCR 把目录点线/装饰线误识为连续重复假名的幻影尾部。
+    def _strip_repeat_tail(text, min_len=6):
+        """剥离 OCR 把目录点线/装饰线误识的幻影尾部。
 
-        只删尾部重复段(长度>=min_len 且二元组去重率低), 保留真条目,
-        如「線画の作成コーニュレアアルにアニュー...」→「線画の作成」。
+        点线幻影的特征: 尾部从真条目结束位置起连续无汉字,
+        由片假名/重复假名组成(如「線画の作成コーニュレアアルにアニュー...」
+        →「線画の作成」)。真实正文常以汉字、句读或常见动词收尾,
+        带这些结尾的尾部不剥离。
         """
-        for start in range(len(text) - 1, 0, -1):
-            seg = text[start:]
-            if len(seg) < min_len:
+        if len(text) < min_len + 2:
+            return text
+        tail = ""
+        for ch in reversed(text):
+            if ch.isspace():
                 continue
-            bigrams = [seg[i:i + 2] for i in range(len(seg) - 1)]
-            if not bigrams:
-                continue
-            if len(set(bigrams)) / len(bigrams) <= max_unique_ratio:
-                return text[:start]
+            if ch in "。！？!?、，,.;;:：（）()「」『』【】［］":
+                break
+            if "\u4e00" <= ch <= "\u9fff":
+                break
+            tail = ch + tail
+        if len(tail) < min_len:
+            return text
+        if re.search(
+            r"(ます|です|ました|して|した|している|していた|たい|て|た|ね|よ|か|な|ん|る|い)$",
+            tail,
+        ):
+            return text
+        prefix = text[: len(text) - len(tail)]
+        if not prefix or prefix[-1] < "\u4e00" or prefix[-1] > "\u9fff":
+            return text
+        kat = len(re.findall(r"[\u30a0-\u30ff\u30fc]", tail))
+        bigrams = [tail[i:i + 2] for i in range(len(tail) - 1)]
+        repetitive = bool(bigrams) and len(set(bigrams)) / len(bigrams) <= 0.85
+        if kat >= 2 or repetitive:
+            return prefix
         return text
 
     @staticmethod
@@ -373,6 +395,16 @@ class PageFilter:
             and cjk_blocks / total < self.cjk_ratio
             and long_blocks / total < self.long_block_ratio
         )
+
+    @staticmethod
+    def _is_pure_kana_junk(text, min_len=8):
+        """整段纯假名且无汉字/拉丁/数字的长串 = 目录点线等 OCR 幻影。"""
+        if len(text) < min_len:
+            return False
+        for ch in text:
+            if not ("\u3040" <= ch <= "\u30ff" or ch == "\u30fc"):
+                return False
+        return True
 
     @staticmethod
     def _is_art_text(text):
