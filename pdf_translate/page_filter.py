@@ -166,7 +166,7 @@ class PageFilter:
         art = self._art_regions(img_arr, page_no)
         if art:
             out = [l for l in out
-                   if not self._inside_art_region(l, art)]
+                   if not self._inside_art_region(l, art, img_arr, page_w)]
         skip = getattr(self.config, "SKIP_REGIONS_MANUAL", {}).get(page_no, [])
         if skip:
             out = [l for l in out
@@ -282,13 +282,20 @@ class PageFilter:
             regions.append(r)
         return regions
 
-    def _inside_art_region(self, line, art_regions):
+    def _inside_art_region(self, line, art_regions, img_arr=None,
+                       page_w=None):
         cx = (line.x_min + line.x_max) // 2
         cy = (line.y_min + line.y_max) // 2
-        return any(
-            x0 <= cx <= x1 and y0 <= cy <= y1
-            for x0, y0, x1, y1 in art_regions
-        )
+        for x0, y0, x1, y1 in art_regions:
+            if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+                continue
+            if (img_arr is not None and page_w is not None
+                    and line.x_max - line.x_min
+                    >= self.text_width_ratio * page_w
+                    and self._line_brightness(line, img_arr) >= 0.70):
+                return False
+            return True
+        return False
 
     @staticmethod
     def _inside_skip_region(line, skip_regions):
