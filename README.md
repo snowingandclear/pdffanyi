@@ -1,4 +1,4 @@
-# pdffanyi — 高精度 PDF 翻译工具
+# pdfTran — 高精度 PDF 翻译工具
 
 基于 pixiv_illust-illustrationCatch-master/others/pdfTranslate 开源原型重构，用于把日文绘画教程 PDF 翻译成简体中文，保留版式与图片（描图级覆盖重绘）。
 
