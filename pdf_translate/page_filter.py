@@ -138,6 +138,9 @@ class PageFilter:
         软件界面/插画中的文字短小、密排、背景偏灰多色，
         与白纸黑字的正文长句在以上特征上可区分。
 
+        人物对话气泡（插画/线稿区的短句）直接跳过不翻译，
+        见 _is_dialogue_bubble（阈值走 config.DIALOGUE_*）。
+
         针对截图旁/插图上的孤立的标注（如 SAI 界面步骤标注
         「①「ファイル」メニュー選択《」），追加正文锚规则：
         中等宽度行（text_width_ratio ~ anchor_width_ratio）必须
@@ -157,6 +160,10 @@ class PageFilter:
         )
         out = []
         for line in lines:
+            if self._is_watermark_text(line):
+                continue
+            if self._is_dialogue_bubble(line, img_arr, page_w):
+                continue
             if not self._is_body_line(line, h_med, img_arr, page_h, page_w,
                                       groups, stacks):
                 w_ratio = (line.x_max - line.x_min) / max(page_w, 1)
@@ -172,11 +179,54 @@ class PageFilter:
         if art:
             out = [l for l in out
                    if not self._inside_art_region(l, art, img_arr, page_w)]
-        skip = getattr(self.config, "SKIP_REGIONS_MANUAL", {}).get(page_no, [])
+        skip = list(getattr(self.config, "SKIP_REGIONS_MANUAL", {}).get(page_no, []))
+        watermark = getattr(self.config, "WATERMARK_BAND_PAGES", {}).get(
+            page_no, [])
+        if watermark:
+            skip.extend(watermark)
         if skip:
             out = [l for l in out
                    if not self._inside_skip_region(l, skip)]
         return out
+
+    def _is_watermark_text(self, line):
+        """版权水印文字特征（如「素材工坊 www.cgartist.net」）。
+
+        原文水印字串匹配 config.WATERMARK_TEXT_PATTERNS（正则，
+        部分匹配即跳过）——文本特征命中表示这是明确的站点水印，
+        不论画质如何都该跳过。
+        """
+        text = (line.text or "").strip()
+        if not text:
+            return False
+        for pat in getattr(self.config, "WATERMARK_TEXT_PATTERNS", []):
+            if re.search(pat, text, re.IGNORECASE):
+                return True
+        return False
+
+    def _is_dialogue_bubble(self, line, img_arr, page_w):
+        """人物对话气泡短句启发式：短句且所在背景复杂 → 不翻译。
+
+        气泡文字特征：短句（<= DIALOGUE_MAX_LEN）、行宽窄（非正文
+        宽行）、背景复杂（文字周围唯一颜色数高 = 插画/照片/线稿，
+        非白纸）。白纸正文的段首/段尾短行背景简单，不受影响。
+        阈值走 config.DIALOGUE_*。
+        """
+        text = (line.text or "").strip()
+        if not text:
+            return False
+        if len(text) > getattr(self.config, "DIALOGUE_MAX_LEN", 14):
+            return False
+        if not line.regions:
+            return False
+        w_ratio = (line.x_max - line.x_min) / max(page_w, 1)
+        if (w_ratio >= self.anchor_width_ratio
+                and self._line_brightness(line, img_arr) >= 0.70):
+            return False
+        bg_uniq = max(
+            (r.bg_unique_colors(img_arr) for r in line.regions), default=0
+        )
+        return bg_uniq > getattr(self.config, "DIALOGUE_BG_UNIQUE", 180)
 
     def _is_ui_label(self, line, img_arr, kept):
         """界面标签兜底: 插画/截图旁的按钮、面板短标签原位保留翻译。
