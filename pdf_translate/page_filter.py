@@ -105,6 +105,7 @@ class PageFilter:
             r for r in basic
             if not self._is_art_text(r.text)
             and len(r.text) >= 2
+            and not self._is_garbage_wide(r, img_arr)
         ]
         for r in kept:
             stripped = self._strip_repeat_tail(r.text)
@@ -530,6 +531,27 @@ class PageFilter:
             return False
         return ((group["y_max"] - group["y_min"]) / max(page_h, 1)
                 >= self.group_span_min)
+
+    def _is_garbage_wide(self, r, img_arr, page_w=None):
+        """插画/截图上的 OCR 幻觉: 超宽框却只有极短纯汉字文本。
+
+        例如把整幅插画识别成个 2 字框(「国有」), 行宽占页超 10%
+        但文本极短且无假名/标点。要求框异常高(正常正文行高的
+        数倍, 说明框住了整块插画而非一行字), 正常文字行
+        (行高 1-2% 页高)与超大标题(>15% 页高)均豁免。
+        """
+        page_w = page_w or max(img_arr.shape[1], 1)
+        w_ratio = (r.x_max - r.x_min) / page_w
+        h_ratio = r.height / max(img_arr.shape[0], 1)
+        if w_ratio < 0.10 or not (1 <= len(r.text) <= 4):
+            return False
+        if not (0.06 <= h_ratio < 0.15):
+            return False
+        if re.search(r"[。！？!?、，,;.:：（）()「」『』【】［］]", r.text):
+            return False
+        if self._line_brightness(r, img_arr) < 0.70:
+            return False
+        return True
 
     @staticmethod
     def _strip_repeat_tail(text, min_len=6):

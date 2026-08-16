@@ -15,11 +15,78 @@ from pdf_translate.renderer import Renderer
 from pdf_translate.translator import Translator
 
 
+def _prompt_engine(config):
+    """stdin 为 TTY 时交互式选择翻译引擎, 并输入各 AI 引擎的 key。"""
+    while True:
+        print("选择翻译引擎:")
+        print("  1) google      免费, 无需 key")
+        print("  2) youdao      免费, 无需 key")
+        print("  3) llm         OpenAI 兼容 API (如 DeepSeek)")
+        print("  4) opencode    本机 opencode serve")
+        try:
+            choice = input("请输入编号 (回车默认 3): ").strip()
+        except EOFError:
+            return {}
+        if choice == "":
+            choice = "3"
+        if choice in ("1", "2", "3", "4"):
+            break
+        print("无效输入, 请重试")
+    kwargs = {"engine": {"1": "google", "2": "youdao", "3": "llm", "4": "opencode"}[choice]}
+    if choice in ("1", "2"):
+        return kwargs
+    if choice == "3":
+        default_key = getattr(config, "LLM_API_KEY", "")
+        if default_key:
+            print(f"检测到 .env.local 已有 key (……{default_key[-4:]})")
+        key = input("AI API Key (回车使用已有配置, 留空随后回退 google): ").strip()
+        if not key and default_key:
+            key = default_key
+        base = input(
+            f"base_url (回车: {getattr(config, 'LLM_BASE_URL', 'https://api.deepseek.com')}): "
+        ).strip()
+        model = input(
+            f"model (回车: {getattr(config, 'LLM_MODEL', 'deepseek-v4-flash')}): "
+        ).strip()
+        kwargs["api_key"] = key
+        kwargs["base_url"] = base or getattr(config, "LLM_BASE_URL", "")
+        kwargs["model"] = model or getattr(config, "LLM_MODEL", "")
+    elif choice == "4":
+        port = input("opencode serve 地址 (回车: 127.0.0.1:4096): ").strip()
+        if port:
+            kwargs["opencode_url"] = (
+                port if port.startswith("http") else f"http://{port}"
+            )
+    return kwargs
+
+
 class Pipeline:
     def __init__(self, config, ocr=None, translator=None, page_filter=None):
         self.config = config
         self.ocr = ocr or TesseractOCR()
-        self.translator = translator or Translator()
+        if translator is None:
+            engine = getattr(config, "TRANSLATE_ENGINE", "google")
+            kwargs = {
+                "engine": engine,
+                "api_key": getattr(config, "LLM_API_KEY", ""),
+                "base_url": getattr(config, "LLM_BASE_URL", ""),
+                "model": getattr(config, "LLM_MODEL", ""),
+                "temperature": getattr(config, "LLM_TEMPERATURE", 0.2),
+                "fallback_engine": getattr(config, "LLM_FALLBACK_ENGINE", ""),
+                "opencode_url": getattr(config, "OPENCODE_URL", ""),
+                "opencode_user": getattr(config, "OPENCODE_USER", ""),
+                "opencode_pass": getattr(config, "OPENCODE_PASS", ""),
+            }
+            if engine == "llm":
+                kwargs["max_batch_chars"] = getattr(
+                    config, "LLM_MAX_BATCH_CHARS", None
+                )
+                kwargs["max_batch_lines"] = getattr(
+                    config, "LLM_MAX_BATCH_LINES", None
+                )
+            self.translator = Translator(**kwargs)
+        else:
+            self.translator = translator
         self.page_filter = page_filter or PageFilter(config)
 
     def run(self, pdf_path, output_path, pages=None, dpi=None, debug=False, workdir=None):
@@ -157,7 +224,7 @@ class Pipeline:
             if better:
                 best = max(better, key=lambda x: x.score)
                 new_region = OCRRegion(
-                    r.poly.tolist(), best.text, best.score, words=best.words
+                    best.text, r.poly.tolist(), best.score, words=best.words
                 )
                 new_region.min_word_conf = min(r.min_word_conf, best.min_word_conf)
                 out.append(new_region)
@@ -211,6 +278,28 @@ def main():
     parser.add_argument("--lang", default="jpn+chi_sim")
     parser.add_argument("--psm", type=int, default=11)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--engine",
+        default=None,
+        choices=["google", "youdao", "llm", "opencode"],
+        help="翻译引擎 (覆盖 config.TRANSLATE_ENGINE)",
+    )
+    parser.add_argument(
+        "--api-key", default=None, help="AI 引擎 API Key (覆盖 .env.local)"
+    )
+    parser.add_argument(
+        "--base-url", default=None, help="AI 引擎 OpenAI 兼容接口地址"
+    )
+    parser.add_argument("--model", default=None, help="AI 引擎模型名")
+    parser.add_argument(
+        "--fallback",
+        default=None,
+        choices=["opencode", "none"],
+        help="主引擎失败后的兜底引擎 (默认 opencode)",
+    )
+    parser.add_argument(
+        "--opencode-url", default=None, help="opencode serve 地址"
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -224,7 +313,42 @@ def main():
     pages = None
     if args.start or args.end:
         pages = (args.start or 1, args.end or 10 ** 9)
-    pipeline = Pipeline(config, TesseractOCR(lang=args.lang, psm=args.psm))
+    ocr = TesseractOCR(lang=args.lang, psm=args.psm)
+    kwargs = {}
+    interactive = False
+    try:
+        interactive = sys.stdin.isatty()
+    except Exception:
+        interactive = False
+    if interactive and not (
+        args.engine
+        or args.api_key
+        or args.base_url
+        or args.model
+        or args.fallback
+        or args.opencode_url
+    ):
+        kwargs.update(_prompt_engine(config) or {})
+    if args.engine:
+        kwargs["engine"] = args.engine
+    if args.api_key:
+        kwargs["api_key"] = args.api_key
+        kwargs.setdefault("engine", getattr(config, "TRANSLATE_ENGINE", "llm"))
+    if args.base_url or (args.api_key and getattr(config, "LLM_BASE_URL", "")):
+        kwargs["base_url"] = args.base_url or getattr(config, "LLM_BASE_URL", "")
+    if args.model:
+        kwargs["model"] = args.model
+    if args.fallback:
+        kwargs["fallback_engine"] = (
+            args.fallback if args.fallback != "none" else ""
+        )
+    if args.opencode_url:
+        kwargs["opencode_url"] = args.opencode_url
+    if kwargs.get("engine") == "llm":
+        kwargs["max_batch_chars"] = getattr(config, "LLM_MAX_BATCH_CHARS", None)
+        kwargs["max_batch_lines"] = getattr(config, "LLM_MAX_BATCH_LINES", None)
+    translator = Translator(**kwargs) if kwargs else None
+    pipeline = Pipeline(config, ocr, translator=translator)
     pipeline.run(
         args.input,
         output,

@@ -9,7 +9,9 @@
 - 同行合并：按行分组后整体翻译，避免逐块翻译导致的断句
 - 嵌入文字过滤：行级判定（行宽/字号/背景亮度 + 对齐读列聚类），
   自动跳过插图/插画内的文字与软件界面（SAI 对话框、面板标签、复选框文字等）的翻译
-- 批量翻译：有道翻译免费接口（无需 API key）+ 批量调用 + 编号对位解析
+- 批量翻译：多引擎可选（google/youdao/llm/opencode），llm 引擎批量调用 + 编号对位解析；
+  交互式选择引擎并输入 key（终端内），`.env.local` 保存 DeepSeek 等 OpenAI 兼容 API key，
+  opencode serve 可作主引擎失败后的自动兜底
 - 背景采样擦除：按文本框边缘采样背景色填充，白字彩底也能干净覆盖，并自动检测文字颜色（白字/黑字）与背景匹配
 - 智能排版：自动字号适配、自动换行、垂直文本竖排渲染（译文过长自动缩字号防越界）
 - 翻页断点：`--start/--end` 只翻译指定页；`--debug` 输出调试图
@@ -27,7 +29,10 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pillow openai requests
 
 ```bash
 cd ~/projects/AiSmallTools/pdffanyi
+# 交互式: 启动后先选引擎 (google/youdao/llm/opencode), 再输入 AI key
 python3 -m pdf_translate.pipeline 输入.pdf -o 输出.pdf --debug
+# 非交互 (脚本/后台): 参数齐全即可
+python3 -m pdf_translate.pipeline 输入.pdf --engine llm --api-key sk-xxxx -o 输出.pdf
 python3 -m pdf_translate.pipeline 输入.pdf --start 5 --end 10
 ```
 
@@ -41,11 +46,17 @@ python3 -m pdf_translate.pipeline 输入.pdf --start 5 --end 10
 | `--lang` | OCR 语言，默认 `jpn+chi_sim`，中文书用 `chi_sim+jpn` |
 | `--psm` | tesseract 版面模式，默认 11（稀疏文本，适合画册） |
 | `--debug` | 保存 `_debug_N.png` 检查覆盖效果 |
+| `--engine` | `google` / `youdao` / `llm` / `opencode` |
+| `--api-key / --base-url / --model` | llm 引擎的 key / 接口地址 / 模型名 |
+| `--fallback` | 主引擎失败后的兜底（默认 `opencode`，`none` 关闭） |
 
 ## 配置
 
-- 翻译：有道免费接口 `https://aidemo.youdao.com/trans`，无需 API key，国内直连可用
-- `OCR_CONFIDENCE_THRESHOLD`：0.55，识别置信度门槛
+- 翻译引擎：终端运行会先交互式选择引擎并输入 key；非交互时用 `--engine/--api-key` 等参数
+- 项目根目录 `.env.local`（gitignore）保存 llm key：`LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`，
+  默认 DeepSeek `https://api.deepseek.com` + `deepseek-v4-flash`；主引擎连续失败自动用
+  `opencode serve`（127.0.0.1:4096）兜底翻译
+- google/youdao 免费接口无需 key；`OCR_CONFIDENCE_THRESHOLD`：0.55，识别置信度门槛
 
 ## 实测结果
 
@@ -57,12 +68,13 @@ python3 -m pdf_translate.pipeline 输入.pdf --start 5 --end 10
 ```
 pdffanyi/
 ├── config.py                    # 配置
+├── .env.local                   # AI key (本地, 不进 git)
 ├── requirements.txt
 ├── tests/                       # 测试产物（_debug_N.png 调试图、test_output.pdf）
 └── pdf_translate/
     ├── ocr_engine.py            # tesseract TSV 解析 OCR 引擎
     ├── layout.py                # 行分组
-    ├── translator.py            # DeepSeek 翻译
+    ├── translator.py            # 多引擎 (google/youdao/llm/opencode) + 兜底
     ├── renderer.py              # 背景采样擦除 + 排版渲染
-    └── pipeline.py              # 主流程 + CLI
+    └── pipeline.py              # 主流程 + CLI (交互式引擎选择)
 ```

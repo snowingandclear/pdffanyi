@@ -2,9 +2,12 @@ __pycache__/
 *.pyc
 output/
 out/
-tests/
+tests/_debug_*.png
+tests/*.pdf
+tests/empty*
 *.pdf
 _debug_*.png
 pdffanyi_*/
 runtest*.pdf
 runtest*.log
+.env.local

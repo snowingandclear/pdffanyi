@@ -1,5 +1,25 @@
 import os
 
+
+def _load_env_local(path=".env.local"):
+    """本地密钥文件 (.env.local, 已 gitignore), 仅读取 LLM_ 开头的变量。"""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key.startswith("LLM_") and key not in os.environ:
+                os.environ[key] = value.strip()
+
+
+_load_env_local()
+
+# tesseract TSV 的 conf 是 0-100, 但低置信度行由 rescue/垃圾框规则
+# 兜底处理, 这里保持宽松只挡纯噪声
 OCR_CONFIDENCE_THRESHOLD = 0.55
 RENDER_DPI = 216
 FONT_SIZE_MIN = 10
@@ -51,3 +71,26 @@ FONT_CANDIDATES = [
     "/system/fonts/DroidSansFallback.ttf",
     "/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf",
 ]
+
+# 翻译引擎: google / youdao / llm。
+# llm 使用 OpenAI 兼容接口 (DeepSeek、智谱 GLM、阿里百炼等均可),
+# 默认指向智谱 GLM-4.7-Flash (免费), 需在 https://open.bigmodel.cn 注册
+# 获取 API Key 后通过环境变量 LLM_API_KEY 或此处填入。
+TRANSLATE_ENGINE = "llm"
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_BASE_URL = os.environ.get(
+    "LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
+)
+LLM_MODEL = os.environ.get("LLM_MODEL", "glm-4.7-flash")
+LLM_TEMPERATURE = 0.2
+# LLM 上下文远大于免费接口, 批量可加大: 更大的批量 = 更好的上下文连贯性
+LLM_MAX_BATCH_CHARS = 2000
+LLM_MAX_BATCH_LINES = 40
+
+# 兜底引擎: 主引擎(如 llm)连续失败后自动切换。默认 opencode (本机 serve)。
+# 需先运行 opencode serve (可选 OPENCODE_SERVER_PASSWORD 设密码),
+# 翻译用 opencode 配置的默认模型。
+LLM_FALLBACK_ENGINE = os.environ.get("LLM_FALLBACK_ENGINE", "opencode")
+OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:4096")
+OPENCODE_USER = os.environ.get("OPENCODE_USER", "opencode")
+OPENCODE_PASS = os.environ.get("OPENCODE_SERVER_PASSWORD", "")
