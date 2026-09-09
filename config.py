@@ -131,7 +131,7 @@ FONT_CANDIDATES = [
 # llm 使用 OpenAI 兼容接口 (DeepSeek、智谱 GLM、阿里百炼等均可),
 # 默认指向智谱 GLM-4.7-Flash (免费), 需在 https://open.bigmodel.cn 注册
 # 获取 API Key 后通过环境变量 LLM_API_KEY 或此处填入。
-TRANSLATE_ENGINE = "llm"
+TRANSLATE_ENGINE = "google"
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get(
     "LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
