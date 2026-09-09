@@ -25,6 +25,8 @@ DEFAULT_LLM_MODEL = "glm-4.7-flash"
 
 
 class Translator:
+    """翻译器类: 支持 Google/Youdao/LLM/OpenCode 四种引擎"""
+
     def __init__(
         self,
         api_key="",
@@ -39,6 +41,21 @@ class Translator:
         opencode_user="",
         opencode_pass="",
     ):
+        """初始化翻译器
+
+        Args:
+            api_key: LLM API密钥
+            base_url: LLM API地址
+            model: LLM模型名称
+            engine: 翻译引擎 (google/youdao/llm/opencode)
+            temperature: LLM生成温度
+            max_batch_chars: 批量翻译最大字符数
+            max_batch_lines: 批量翻译最大行数
+            fallback_engine: 主引擎失败后的兜底引擎
+            opencode_url: opencode serve 地址
+            opencode_user: opencode 用户名
+            opencode_pass: opencode 密码
+        """
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": UA})
         self._last_request = 0.0
@@ -82,9 +99,21 @@ class Translator:
 
     @staticmethod
     def _is_limited(status):
+        """判断是否被限流 (返回 True 表示需要等待重试)"""
         return status in ("103", "411", "429")
 
     def _translate_text(self, text, src="ja", dst="zh-CN", attempts=4):
+        """翻译文本 (通用方法, 支持重试和引擎切换)
+
+        Args:
+            text: 待翻译文本
+            src: 源语言代码
+            dst: 目标语言代码
+            attempts: 最大重试次数
+
+        Returns:
+            翻译后的文本, 失败返回空字符串
+        """
         # LLM 免费档有账户级速率限制, 需要更长的退避与更多重试次数
         max_attempts = 8 if self.engine == "llm" else attempts
         engine = self.engine
@@ -127,6 +156,7 @@ class Translator:
         return ""
 
     def _throttle(self):
+        """请求限流控制: 确保两次请求间隔不低于最小间隔"""
         gap = (
             LLM_REQUEST_GAP
             if self.engine in ("llm", "opencode")
@@ -137,6 +167,16 @@ class Translator:
         self._last_request = time.time()
 
     def _translate_google(self, text, src, dst):
+        """Google 翻译: 通过免费镜像接口翻译
+
+        Args:
+            text: 待翻译文本
+            src: 源语言代码 (如 'ja')
+            dst: 目标语言代码 (如 'zh-CN')
+
+        Returns:
+            翻译后的文本
+        """
         last_err = None
         for mirror in GOOGLE_MIRRORS:
             try:
@@ -164,6 +204,7 @@ class Translator:
         raise RuntimeError(f"所有谷歌镜像失败: {str(last_err)[:60]}")
 
     def _translate_youdao(self, text):
+        """有道翻译: 通过有道免费接口翻译"""
         resp = self.session.post(
             YOUDAO_URL,
             data={"q": text, "from": "ja", "to": "zh-CHS"},
@@ -181,6 +222,7 @@ class Translator:
 
     @staticmethod
     def _llm_system_prompt(src, dst):
+        """生成 LLM 翻译的系统提示词"""
         return (
             f"你是专业译者, 把用户消息中的{src}翻译成{dst}。"
             '用户消息的每一行都以"数字. "开头(如"0. 原文"), '
@@ -190,6 +232,7 @@ class Translator:
         )
 
     def _translate_llm(self, text, src, dst):
+        """LLM 翻译: 通过 OpenAI 兼容 API 翻译"""
         from openai import OpenAI
 
         client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60)
@@ -205,6 +248,7 @@ class Translator:
         return (content or "").strip()
 
     def _translate_opencode(self, text, src, dst):
+        """OpenCode 翻译: 通过本机 opencode serve 翻译"""
         """通过本机 opencode serve 翻译 (http://127.0.0.1:4096)。"""
         url = self.opencode_url
         auth = (self.opencode_user, self.opencode_pass) if self.opencode_pass else None
@@ -248,6 +292,14 @@ class Translator:
                 pass
 
     def translate_lines(self, lines):
+        """批量翻译多行文本 (自动分批, 保持上下文连贯)
+
+        Args:
+            lines: 待翻译的文本列表
+
+        Returns:
+            翻译后的文本列表
+        """
         if not lines:
             return []
         translated = []
@@ -272,6 +324,7 @@ class Translator:
         return translated
 
     def _translate_batch(self, lines, context=None):
+        """翻译一批文本 (带上下文支持)"""
         payload = "\n".join(f"{i}. {text}" for i, text in enumerate(lines))
         try:
             if context and self.engine in ("llm", "opencode"):
@@ -292,6 +345,7 @@ class Translator:
         return translated
 
     def _translate_text_with_context(self, text, context, src="ja", dst="zh-CN"):
+        """带上下文的翻译 (仅 LLM/OpenCode 引擎支持)"""
         """带上下文的翻译 (仅 LLM/opencode 引擎)"""
         if self.engine == "llm":
             return self._translate_llm_with_context(text, context, src, dst)
@@ -300,6 +354,7 @@ class Translator:
         return self._translate_text(text, src, dst)
 
     def _translate_llm_with_context(self, text, context, src, dst):
+        """带上下文的 LLM 翻译"""
         from openai import OpenAI
 
         context_text = "\n".join(f"[前文] {t}" for t in context[-12:])  # 最近 12 行上下文
@@ -326,6 +381,7 @@ class Translator:
         return (content or "").strip()
 
     def _translate_opencode_with_context(self, text, context, src, dst):
+        """带上下文的 OpenCode 翻译"""
         """带上下文的 opencode 翻译"""
         url = self.opencode_url
         auth = (self.opencode_user, self.opencode_pass) if self.opencode_pass else None
@@ -378,6 +434,7 @@ class Translator:
 
     @staticmethod
     def _parse_batch(content, expected):
+        """解析批量翻译结果 (支持 JSON/编号列表/纯文本格式)"""
         if not content:
             return [""] * expected
         items = {}
