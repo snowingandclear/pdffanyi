@@ -183,8 +183,8 @@ class Translator:
     def _llm_system_prompt(src, dst):
         return (
             f"你是专业译者, 把用户消息中的{src}翻译成{dst}。"
-            "用户消息的每一行都以“数字. ”开头(如“0. 原文”), "
-            "你必须逐行翻译, 输出时保留每一行的“数字. ”前缀和原有行序, "
+            '用户消息的每一行都以"数字. "开头(如"0. 原文"), '
+            '你必须逐行翻译, 输出时保留每一行的"数字. "前缀和原有行序, '
             "一行对应一行, 不合并、不拆分、不遗漏、不删号, "
             "不输出任何解释或额外内容, 翻译不出来的行原样保留。"
         )
@@ -253,22 +253,31 @@ class Translator:
         translated = []
         current_batch = []
         current_len = 0
+        context = []  # 前几批的译文, 用于 LLM 上下文
         for line in lines:
             if (current_len + len(line) > self.max_batch_chars
                     or len(current_batch) >= self.max_batch_lines) and current_batch:
-                translated.extend(self._translate_batch(current_batch))
+                batch_result = self._translate_batch(current_batch, context)
+                translated.extend(batch_result)
+                # 保留最近 3 批译文作为上下文 (每批最多 12 行)
+                context.extend(batch_result)
+                if len(context) > 36:  # 3 批 x 12 行
+                    context = context[-36:]
                 current_batch = []
                 current_len = 0
             current_batch.append(line)
             current_len += len(line)
         if current_batch:
-            translated.extend(self._translate_batch(current_batch))
+            translated.extend(self._translate_batch(current_batch, context))
         return translated
 
-    def _translate_batch(self, lines):
+    def _translate_batch(self, lines, context=None):
         payload = "\n".join(f"{i}. {text}" for i, text in enumerate(lines))
         try:
-            content = self._translate_text(payload)
+            if context and self.engine in ("llm", "opencode"):
+                content = self._translate_text_with_context(payload, context)
+            else:
+                content = self._translate_text(payload)
         except Exception as e:
             print(f"[translate] batch failed: {str(e)[:80]}")
             content = ""
@@ -281,6 +290,91 @@ class Translator:
             for i in missing:
                 translated[i] = self._translate_text(lines[i], attempts=3)
         return translated
+
+    def _translate_text_with_context(self, text, context, src="ja", dst="zh-CN"):
+        """带上下文的翻译 (仅 LLM/opencode 引擎)"""
+        if self.engine == "llm":
+            return self._translate_llm_with_context(text, context, src, dst)
+        elif self.engine == "opencode":
+            return self._translate_opencode_with_context(text, context, src, dst)
+        return self._translate_text(text, src, dst)
+
+    def _translate_llm_with_context(self, text, context, src, dst):
+        from openai import OpenAI
+
+        context_text = "\n".join(f"[前文] {t}" for t in context[-12:])  # 最近 12 行上下文
+        system_prompt = (
+            f"你是专业译者, 把用户消息中的{src}翻译成{dst}。"
+            '用户消息的每一行都以"数字. "开头(如"0. 原文"), '
+            '你必须逐行翻译, 输出时保留每一行的"数字. "前缀和原有行序, '
+            "一行对应一行, 不合并、不拆分、不遗漏、不删号, "
+            "不输出任何解释或额外内容, 翻译不出来的行原样保留。"
+            "根据前文上下文保持译文连贯性。"
+        )
+        user_content = f"前文译文:\n{context_text}\n\n待翻译:\n{text}" if context_text else text
+
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60)
+        resp = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=self.temperature,
+        )
+        content = resp.choices[0].message.content
+        return (content or "").strip()
+
+    def _translate_opencode_with_context(self, text, context, src, dst):
+        """带上下文的 opencode 翻译"""
+        url = self.opencode_url
+        auth = (self.opencode_user, self.opencode_pass) if self.opencode_pass else None
+        timeout = 180
+        resp = self.session.post(
+            f"{url}/session", json={}, auth=auth, timeout=timeout
+        )
+        resp.raise_for_status()
+        sid = resp.json().get("id")
+        if not sid:
+            raise RuntimeError(f"opencode 创建 session 失败: {str(resp.json())[:100]}")
+        try:
+            context_text = "\n".join(f"[前文] {t}" for t in context[-12:])
+            system_prompt = (
+                f"你是专业译者, 把用户消息中的{src}翻译成{dst}。"
+                '用户消息的每一行都以"数字. "开头(如"0. 原文"), '
+                '你必须逐行翻译, 输出时保留每一行的"数字. "前缀和原有行序, '
+                "一行对应一行, 不合并、不拆分、不遗漏、不删号, "
+                "不输出任何解释或额外内容, 翻译不出来的行原样保留。"
+                "根据前文上下文保持译文连贯性。"
+            )
+            user_content = f"前文译文:\n{context_text}\n\n待翻译:\n{text}" if context_text else text
+            msg = self.session.post(
+                f"{url}/session/{sid}/message",
+                json={
+                    "system": system_prompt,
+                    "parts": [{"type": "text", "text": user_content}],
+                },
+                auth=auth,
+                timeout=timeout,
+            )
+            msg.raise_for_status()
+            data = msg.json()
+            parts = data.get("parts") or []
+            content = "\n".join(
+                p.get("text", "")
+                for p in parts
+                if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
+            ).strip()
+            if not content:
+                raise RuntimeError(f"opencode 空回复: {str(data)[:120]}")
+            return content
+        finally:
+            try:
+                self.session.delete(
+                    f"{url}/session/{sid}", auth=auth, timeout=10
+                )
+            except Exception:
+                pass
 
     @staticmethod
     def _parse_batch(content, expected):
