@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,7 +90,8 @@ class Pipeline:
             self.translator = translator
         self.page_filter = page_filter or PageFilter(config)
 
-    def run(self, pdf_path, output_path, pages=None, dpi=None, debug=False, workdir=None):
+    def run(self, pdf_path, output_path, pages=None, dpi=None, debug=False,
+            workdir=None, fresh=False):
         dpi = dpi or self.config.RENDER_DPI
         if not which("pdftoppm"):
             raise RuntimeError("poppler not installed: pkg install poppler")
@@ -100,12 +102,41 @@ class Pipeline:
             page_indexes = [i for i in page_indexes if start - 1 <= i <= end - 1]
         workdir = workdir or os.path.dirname(os.path.abspath(output_path)) or "."
         os.makedirs(workdir, exist_ok=True)
-        pages_dir = tempfile.mkdtemp(prefix="pdffanyi_", dir=workdir)
-        jpegs = []
+        # 断点续传: 每页产物落盘到 <输出名>_checkpoints/, 中断后重跑同参数自动续传
+        ck_dir = self._checkpoint_dir(output_path)
+        done = set()
+        if not fresh:
+            loaded = self._load_checkpoint(ck_dir, total, pages, dpi)
+            if loaded is None and os.path.exists(ck_dir):
+                print(f"[checkpoint] 参数不匹配, 丢弃旧断点: {ck_dir}", flush=True)
+                shutil.rmtree(ck_dir, ignore_errors=True)
+            else:
+                done = loaded or set()
+                done = {
+                    p for p in done
+                    if os.path.exists(os.path.join(ck_dir, f"p{p + 1:04d}.jpg"))
+                }
+                if done:
+                    print(
+                        f"[checkpoint] 续传: 跳过 {len(done)}/{len(page_indexes)} 页"
+                        f" ({', '.join(str(p + 1) for p in sorted(done)[:8])}{'...' if len(done) > 8 else ''})",
+                        flush=True,
+                    )
+        elif os.path.exists(ck_dir):
+            shutil.rmtree(ck_dir, ignore_errors=True)
+        os.makedirs(ck_dir, exist_ok=True)
+        self._save_checkpoint(ck_dir, total, pages, dpi, done)
+        jpegs = sorted(
+            (os.path.join(ck_dir, f"p{p + 1:04d}.jpg") for p in done),
+            key=lambda x: int(os.path.basename(x)[1:5]),
+        )
         try:
             for page_no in page_indexes:
+                if page_no in done:
+                    print(f"[page {page_no + 1}] 已缓存, 跳过", flush=True)
+                    continue
                 print(f"\n[page {page_no + 1}/{total}] rendering...", flush=True)
-                png_path = self._render_page(pdf_path, page_no + 1, dpi, pages_dir)
+                png_path = self._render_page(pdf_path, page_no + 1, dpi, ck_dir)
                 print(f"[page {page_no + 1}] OCR...", flush=True)
                 img = Image.open(png_path).convert("RGB")
                 regions = self.ocr.recognize(png_path, dpi=dpi)
@@ -167,23 +198,61 @@ class Pipeline:
                         dbg = os.path.join(workdir, f"_debug_{page_no + 1}.png")
                         img.save(dbg)
                         print(f"[page {page_no + 1}] debug: {dbg}")
-                jpeg_path = os.path.join(pages_dir, f"p{page_no + 1:04d}.jpg")
+                jpeg_path = os.path.join(ck_dir, f"p{page_no + 1:04d}.jpg")
                 img.save(jpeg_path, format="JPEG", quality=88, dpi=(dpi, dpi))
                 jpegs.append(jpeg_path)
+                done.add(page_no)
+                self._save_checkpoint(ck_dir, total, pages, dpi, done)
                 os.remove(png_path)
             make_pdf(jpegs, output_path)
+            shutil.rmtree(ck_dir, ignore_errors=True)
         finally:
-            if not debug:
-                for jpg in jpegs:
-                    try:
-                        os.remove(jpg)
-                    except OSError:
-                        pass
-            try:
-                os.rmdir(pages_dir)
-            except OSError:
-                pass
+            pass
         print(f"\nDONE: {output_path} ({len(jpegs)} pages)")
+
+    @staticmethod
+    def _checkpoint_dir(output_path):
+        return os.path.join(
+            os.path.dirname(os.path.abspath(output_path)),
+            os.path.basename(output_path) + "_checkpoints",
+        )
+
+    @staticmethod
+    def _save_checkpoint(ck_dir, total, pages, dpi, done):
+        import json
+        meta = {
+            "total": total,
+            "start": pages[0] if pages else None,
+            "end": pages[1] if pages else None,
+            "dpi": dpi,
+            "done": sorted(done),
+        }
+        meta_path = os.path.join(ck_dir, "meta.json")
+        tmp = meta_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        os.replace(tmp, meta_path)
+
+    @staticmethod
+    def _load_checkpoint(ck_dir, total, pages, dpi):
+        """断点 meta 与当前参数一致时返回已完成页码集合, 否则返回 None。"""
+        import json
+        meta_path = os.path.join(ck_dir, "meta.json")
+        if not os.path.exists(meta_path):
+            return None
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if (
+            m.get("total") != total
+            or m.get("dpi") != dpi
+            or m.get("start") != (pages[0] if pages else None)
+            or m.get("end") != (pages[1] if pages else None)
+        ):
+            return None
+        return set(m.get("done", []))
 
     def _rescue_low_conf(self, regions, img, dpi):
         """低置信度长 CJK 行兜底: 裁出放大 2 倍重识别, 文本更可信则替换。
@@ -279,6 +348,10 @@ def main():
     parser.add_argument("--psm", type=int, default=11)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
+        "--fresh", action="store_true",
+        help="丢弃已有断点从第 1 页重新翻译 (默认: 有断点自动续传)",
+    )
+    parser.add_argument(
         "--engine",
         default=None,
         choices=["google", "youdao", "llm", "opencode"],
@@ -355,6 +428,7 @@ def main():
         pages=pages,
         dpi=args.dpi,
         debug=args.debug,
+        fresh=args.fresh,
         workdir=os.path.dirname(os.path.abspath(output)),
     )
 

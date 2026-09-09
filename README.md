@@ -15,6 +15,9 @@
 - 背景采样擦除：按文本框边缘采样背景色填充，白字彩底也能干净覆盖，并自动检测文字颜色（白字/黑字）与背景匹配
 - 智能排版：自动字号适配、自动换行、垂直文本竖排渲染（译文过长自动缩字号防越界）
 - 翻页断点：`--start/--end` 只翻译指定页；`--debug` 输出调试图
+- 断点续传：每翻完一页即落盘到 `<输出名>_checkpoints/`（meta.json 记录参数与已完成页码）。
+  中断（断电/余额不足/进程被杀）后重跑**同参数命令**自动跳过已完成页；
+  参数不一致自动清空重来；`--fresh` 强制重翻。全部完成生成 PDF 后自动清理断点目录
 
 ## 依赖安装
 
@@ -46,6 +49,7 @@ python3 -m pdf_translate.pipeline 输入.pdf --start 5 --end 10
 | `--lang` | OCR 语言，默认 `jpn+chi_sim`，中文书用 `chi_sim+jpn` |
 | `--psm` | tesseract 版面模式，默认 11（稀疏文本，适合画册） |
 | `--debug` | 保存 `_debug_N.png` 检查覆盖效果 |
+| `--fresh` | 丢弃已有断点从第 1 页重翻（默认: 检测到断点自动续传） |
 | `--engine` | `google` / `youdao` / `llm` / `opencode` |
 | `--api-key / --base-url / --model` | llm 引擎的 key / 接口地址 / 模型名 |
 | `--fallback` | 主引擎失败后的兜底（默认 `opencode`，`none` 关闭） |

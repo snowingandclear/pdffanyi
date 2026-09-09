@@ -107,6 +107,14 @@ class PageFilter:
             and len(r.text) >= 2
             and not self._is_garbage_wide(r, img_arr)
         ]
+        force = list(getattr(self.config, "TOC_FORCE_REGIONS_MANUAL", {}).get(
+            page_no, []))
+        if force:
+            for r in basic:
+                if r in kept:
+                    continue
+                if self._inside_skip_region(r, force):
+                    kept.append(r)
         for r in kept:
             stripped = self._strip_repeat_tail(r.text)
             if stripped:
@@ -152,6 +160,7 @@ class PageFilter:
         """
         if not lines:
             return lines
+        self._ui_all_lines = [l for l in lines if not l.vertical]
         h_med = sorted(l.text_height for l in lines)[len(lines) // 2]
         page_h, page_w = img_arr.shape[:2]
         stacks = self._column_stacks(lines, page_w)
@@ -159,8 +168,19 @@ class PageFilter:
             [l for l in lines if not l.vertical], img_arr
         )
         out = []
+        force = list(
+            getattr(self.config, "TOC_FORCE_REGIONS_MANUAL", {}).get(
+                page_no, [])
+        )
         for line in lines:
             if self._is_watermark_text(line):
+                continue
+            if self._is_forced_toc_line(line, force):
+                out.append(line)
+                continue
+            if self._is_forced_ui_region_line(
+                    line, page_no, img_arr, page_h, page_w):
+                out.append(line)
                 continue
             if self._is_dialogue_bubble(line, img_arr, page_w):
                 continue
@@ -177,17 +197,78 @@ class PageFilter:
             out.append(line)
         art = self._art_regions(img_arr, page_no)
         if art:
+            ui_ids = {id(l) for l in out
+                      if self._is_forced_toc_line(l, force)
+                      or self._is_forced_ui_region_line(
+                          l, page_no, img_arr, page_h, page_w)}
             out = [l for l in out
-                   if not self._inside_art_region(l, art, img_arr, page_w)]
+                   if id(l) in ui_ids
+                   or not self._inside_art_region(l, art, img_arr, page_w)]
         skip = list(getattr(self.config, "SKIP_REGIONS_MANUAL", {}).get(page_no, []))
         watermark = getattr(self.config, "WATERMARK_BAND_PAGES", {}).get(
             page_no, [])
         if watermark:
             skip.extend(watermark)
         if skip:
+            ui_ids = {id(l) for l in out
+                      if self._is_forced_toc_line(l, force)
+                      or self._is_forced_ui_region_line(
+                          l, page_no, img_arr, page_h, page_w)}
             out = [l for l in out
-                   if not self._inside_skip_region(l, skip)]
+                   if id(l) in ui_ids
+                   or not self._inside_skip_region(l, skip)]
         return out
+
+    def _is_forced_ui_region_line(self, line, page_no, img_arr, page_h, page_w):
+        """通用截图/对话框文字区自动识别（不依赖页码配置）。
+
+        截图里的文字行（如 Photoshop 新建文件对话框、SAI 面板）
+        通常成簇出现：若干行纵向紧邻形成面板文字块，背景是面板
+        底色（亮度较正文低、统一）。OCR 常把一句话拦腰拆成多行
+        （「…の画|面を作成する場合は…」），逐行会被「孤立短行」
+        /「对话气泡」规则误丢，故按“面板块”整体强制放行翻译。
+
+        判定（全部满足才强制，避免误伤插画装饰字）：
+        - 横排、行高在 24~190 px、含 ≥2 个日文字符（排除页码噪声）
+        - 行属于某纵向面板块：块内 ≥4 行，行间空隙 ≤ 2.2 倍中位
+          行高，块纵向跨度 ≥ 4 倍中位行高（抓紧的说明文字块）
+        - 块内行平均亮度 < 0.88（面板底色，非纯白纸正文）
+        - 块内存在至少 1 条中等宽行（宽 ≥ 6% 页宽，说明文字）
+        """
+        if line.vertical:
+            return False
+        text = (line.text or "").strip()
+        if len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text)) < 2:
+            return False
+        h = line.text_height
+        if not (24 <= h <= 190):
+            return False
+        bright = self._line_brightness(line, img_arr)
+        if bright >= 0.88:
+            return False
+        pool = list(self._ui_all_lines)
+        hmed = sorted(l.text_height for l in pool)[len(pool) // 2] or h
+        # 纵向紧邻组建块：与 line 纵向相邻（空隙 ≤ 2.2*hmed）的行
+        panel = [l for l in pool
+                 if not l.vertical
+                 and 24 <= l.text_height <= 190
+                 and -0.5 * hmed <= (l.y_min - line.y_max)
+                 and (line.y_min - l.y_max) <= 2.2 * hmed]
+        if len(panel) < 4:
+            return False
+        span = (max(l.y_max for l in panel)
+                - min(l.y_min for l in panel))
+        if span < 4 * hmed:
+            return False
+        if not any(
+            (l.x_max - l.x_min) / max(page_w, 1) >= 0.06
+            for l in panel
+        ):
+            return False
+        mean_bright = sum(
+            self._line_brightness(l, img_arr) for l in panel
+        ) / max(len(panel), 1)
+        return mean_bright < 0.88
 
     def _is_watermark_text(self, line):
         """版权水印文字特征（如「素材工坊 www.cgartist.net」）。
@@ -211,6 +292,10 @@ class PageFilter:
         宽行）、背景复杂（文字周围唯一颜色数高 = 插画/照片/线稿，
         非白纸）。白纸正文的段首/段尾短行背景简单，不受影响。
         阈值走 config.DIALOGUE_*。
+
+        例外：若短行属于截图对话框/面板文字簇（见
+        _is_forced_ui_region_line），则不视为气泡——截图里的说明
+        文字常被 OCR 拦腰拆成短行，需要保留翻译。
         """
         text = (line.text or "").strip()
         if not text:
@@ -222,6 +307,9 @@ class PageFilter:
         w_ratio = (line.x_max - line.x_min) / max(page_w, 1)
         if (w_ratio >= self.anchor_width_ratio
                 and self._line_brightness(line, img_arr) >= 0.70):
+            return False
+        if self._is_forced_ui_region_line(
+                line, None, img_arr, img_arr.shape[0], page_w):
             return False
         bg_uniq = max(
             (r.bg_unique_colors(img_arr) for r in line.regions), default=0
@@ -351,6 +439,25 @@ class PageFilter:
                 return False
             return True
         return False
+
+    def _is_forced_toc_line(self, line, force_regions):
+        """目录/索引页强制翻译: 行框完整包含于手动框区内即放行。
+
+        仅对横排行、含 ≥4 个字符、且非纯数字/拉丁/符号(OCR 幻影)
+        的行生效, 避免把页码与噪声翻译出来。
+        """
+        if not force_regions or line.vertical:
+            return False
+        if not self._inside_skip_region(line, force_regions):
+            return False
+        text = (line.text or "").strip()
+        if len(text) < 4:
+            return False
+        if re.fullmatch(r"[0-9A-Za-z\s\-—….,.%/+&'\":;!?()（）]+", text):
+            return False
+        if self._is_repeat_text(text):
+            return False
+        return True
 
     @staticmethod
     def _inside_skip_region(line, skip_regions):
