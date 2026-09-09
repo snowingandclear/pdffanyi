@@ -7,7 +7,17 @@ import numpy as np
 
 
 class OCRRegion:
+    """OCR识别结果区域: 包含文本、位置、置信度等信息"""
+
     def __init__(self, text, poly, score, words=None):
+        """初始化OCR区域
+
+        Args:
+            text: 识别出的文本
+            poly: 多边形坐标 [[x1,y1], [x2,y2], ...]
+            score: 置信度分数
+            words: 单词列表
+        """
         self.text = text
         self.poly = np.asarray(poly, dtype=np.float32)
         self.score = float(score)
@@ -23,13 +33,15 @@ class OCRRegion:
         self.center_y = (self.y_min + self.y_max) // 2
 
     def is_vertical(self):
+        """判断是否为竖排文本"""
         return self.height > self.width * 1.5
 
     def area(self):
+        """计算区域面积"""
         return self.width * self.height
 
     def bg_unique_colors(self, img_arr, pad=8):
-        """文字框周围背景的唯一颜色数"""
+        """统计文字框周围背景的唯一颜色数 (用于判断是否为插画区)"""
         h, w = img_arr.shape[:2]
         x0 = max(self.x_min - pad, 0)
         x1 = min(self.x_max + pad, w)
@@ -42,11 +54,28 @@ class OCRRegion:
 
 
 class TesseractOCR:
+    """Tesseract OCR引擎: 识别图片中的文字"""
+
     def __init__(self, lang="jpn+chi_sim", psm=11):
+        """初始化OCR引擎
+
+        Args:
+            lang: 语言包 (jpn=日文, chi_sim=简体中文)
+            psm: 页面分割模式 (11=稀疏文本)
+        """
         self.lang = lang
         self.psm = psm
 
     def recognize(self, image_path, dpi=216):
+        """识别图片中的文字
+
+        Args:
+            image_path: 图片路径
+            dpi: 图片分辨率
+
+        Returns:
+            OCRRegion 列表
+        """
         if not which("tesseract"):
             raise RuntimeError("tesseract not installed: pkg install tesseract")
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,6 +98,7 @@ class TesseractOCR:
 
     @staticmethod
     def _parse_tsv(tsv_path):
+        """解析Tesseract TSV输出文件"""
         regions = []
         pending_key = None
         builder = None
@@ -108,14 +138,19 @@ class TesseractOCR:
 
 
 class _RegionBuilder:
+    """区域构建器: 将多个单词合并为一个文本行"""
+
     def __init__(self, text, box, conf):
+        """初始化区域构建器"""
         self.parts = [(text, box, conf)]
         self.words = []
 
     def add(self, text, box, conf):
+        """添加单词到当前行"""
         self.parts.append((text, box, conf))
 
     def to_region(self):
+        """将构建器转换为OCRRegion对象"""
         xs = []
         ys = []
         text = ""

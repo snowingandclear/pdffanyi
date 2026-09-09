@@ -7,7 +7,10 @@ import config
 
 
 class FontManager:
+    """字体管理器: 自动查找并缓存中文字体"""
+
     def __init__(self):
+        """初始化字体管理器, 自动查找可用的中文字体"""
         self.font_path = None
         for candidate in config.FONT_CANDIDATES:
             if not os.path.exists(candidate):
@@ -22,6 +25,7 @@ class FontManager:
         self._cache = {}
 
     def get_font(self, size):
+        """获取指定大小的字体 (带缓存)"""
         if size not in self._cache:
             try:
                 self._cache[size] = ImageFont.truetype(self.font_path, size)
@@ -31,17 +35,26 @@ class FontManager:
 
 
 class Renderer:
+    """渲染器: 负责背景擦除和译文绘制"""
+
     def __init__(self, image):
+        """初始化渲染器
+
+        Args:
+            image: PIL Image 对象
+        """
         self.image = image
         self.arr = np.array(image.convert("RGB"), dtype=np.uint8)
         self.fonts = FontManager()
 
     def sync(self):
+        """同步numpy数组到PIL Image"""
         self.arr = np.asarray(self.arr, dtype=np.uint8)
         self.image = Image.fromarray(self.arr)
 
     @staticmethod
     def _sample_bg(arr, x_min, y_min, x_max, y_max, pad=6):
+        """采样背景色: 取文本框边缘像素的中位数"""
         h, w = arr.shape[:2]
         samples = []
         left = max(x_min - pad, 0)
@@ -61,6 +74,7 @@ class Renderer:
         return tuple(int(np.median(samples, axis=0)[i]) for i in range(3))
 
     def erase(self, x_min, y_min, x_max, y_max, words=None):
+        """擦除文字区域: 用背景色填充"""
         bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
         pad = 1
         bx0 = max(x_min - pad, 0)
@@ -70,11 +84,13 @@ class Renderer:
         self._erase_foreground(bx0, by0, bx1, by1, bg)
 
     def _is_text_box(self, x0, y0, x1, y1, bg, max_fore_ratio=0.35):
+        """判断区域是否为文字框 (前景占比低=可能是背景)"""
         window = self.arr[y0:y1, x0:x1].astype(np.int32)
         dist = np.abs(window - np.asarray(bg, dtype=np.int32)).sum(axis=2)
         return (dist > 60).mean() <= max_fore_ratio
 
     def _erase_foreground(self, x0, y0, x1, y1, bg, diff_thresh=60):
+        """擦除前景: 将与背景色差异大的像素替换为背景色"""
         window = self.arr[y0:y1, x0:x1].astype(np.int32)
         dist = np.abs(window - np.asarray(bg, dtype=np.int32)).sum(axis=2)
         mask = dist > diff_thresh
@@ -84,6 +100,7 @@ class Renderer:
         self.arr[y0:y1, x0:x1] = window.astype(np.uint8)
 
     def text_color(self, x_min, y_min, x_max, y_max):
+        """检测文字颜色: 根据背景亮度决定使用白色或黑色文字"""
         import numpy as np
 
         bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
@@ -105,6 +122,7 @@ class Renderer:
         return (0, 0, 0)
 
     def measure_text_size(self, x_min, y_min, x_max, y_max, vertical=False):
+        """测量原文墨迹范围: 用于确定译文字号"""
         """测量原文本墨迹范围: 横排=高度, 竖排=单列宽度, 作为译文字号基准."""
         bg = self._sample_bg(self.arr, x_min, y_min, x_max, y_max)
         window = self.arr[y_min:y_max, x_min:x_max].astype(np.int32)
@@ -128,10 +146,12 @@ class Renderer:
         return h if h <= y_max - y_min else None
 
     def _ink_metrics(self, font):
+        """获取字体的墨迹尺寸 (高度和宽度)"""
         bbox = font.getbbox("测", anchor="la")
         return max(bbox[3] - bbox[1], 1), max(bbox[2] - bbox[0], 1)
 
     def _fit_font(self, text, box_w, box_h, text_height=None):
+        """自动调整字号使文字适应框大小"""
         start = text_height or box_h
         font_size = max(min(int(start), config.FONT_SIZE_MAX), config.FONT_SIZE_MIN)
         while True:
@@ -147,6 +167,7 @@ class Renderer:
             font_size -= 1
 
     def draw_horizontal(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0), text_height=None):
+        """绘制横排文字"""
         box_w = max(x_max - x_min, 1)
         box_h = max(y_max - y_min, 1)
         font, lines = self._fit_font(text, box_w, box_h, text_height)
@@ -167,6 +188,7 @@ class Renderer:
         self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
     def draw_vertical(self, text, x_min, y_min, x_max, y_max, fill=(0, 0, 0), text_height=None):
+        """绘制竖排文字"""
         box_w = max(x_max - x_min, 1)
         box_h = max(y_max - y_min, 1)
         chars = list(text)
@@ -207,6 +229,7 @@ class Renderer:
         self.arr[y_min:y_max, x_min:x_max] = np.asarray(tmp)
 
     def _wrap(self, text, font, box_w):
+        """文字自动换行"""
         lines = []
         current = ""
         for ch in text:

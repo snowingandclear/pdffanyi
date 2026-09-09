@@ -1,4 +1,10 @@
 def make_pdf(image_paths, output_path):
+    """将多张图片合成为PDF文件
+
+    Args:
+        image_paths: 图片路径列表
+        output_path: 输出PDF路径
+    """
     from PIL import Image
 
     bodies = {}
@@ -73,4 +79,5 @@ def make_pdf(image_paths, output_path):
 
 
 def _as_latin(data):
+    """将字节数据解码为latin-1字符串"""
     return data.decode("latin-1")

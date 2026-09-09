@@ -62,7 +62,17 @@ def _prompt_engine(config):
 
 
 class Pipeline:
+    """PDF翻译主流程: 渲染→OCR→过滤→翻译→重绘→合成PDF"""
+
     def __init__(self, config, ocr=None, translator=None, page_filter=None):
+        """初始化翻译管道
+
+        Args:
+            config: 配置对象
+            ocr: OCR引擎实例
+            translator: 翻译器实例
+            page_filter: 页面过滤器实例
+        """
         self.config = config
         self.ocr = ocr or TesseractOCR()
         if translator is None:
@@ -92,6 +102,17 @@ class Pipeline:
 
     def run(self, pdf_path, output_path, pages=None, dpi=None, debug=False,
             workdir=None, fresh=False):
+        """执行PDF翻译主流程
+
+        Args:
+            pdf_path: 输入PDF路径
+            output_path: 输出PDF路径
+            pages: 页码范围 (start, end)
+            dpi: 渲染分辨率
+            debug: 是否保存调试图
+            workdir: 工作目录
+            fresh: 是否强制重新翻译 (忽略断点)
+        """
         dpi = dpi or self.config.RENDER_DPI
         if not which("pdftoppm"):
             raise RuntimeError("poppler not installed: pkg install poppler")
@@ -212,6 +233,7 @@ class Pipeline:
 
     @staticmethod
     def _checkpoint_dir(output_path):
+        """获取断点目录路径"""
         return os.path.join(
             os.path.dirname(os.path.abspath(output_path)),
             os.path.basename(output_path) + "_checkpoints",
@@ -219,6 +241,7 @@ class Pipeline:
 
     @staticmethod
     def _save_checkpoint(ck_dir, total, pages, dpi, done):
+        """保存断点信息到 meta.json"""
         import json
         meta = {
             "total": total,
@@ -255,10 +278,10 @@ class Pipeline:
         return set(m.get("done", []))
 
     def _rescue_low_conf(self, regions, img, dpi):
-        """低置信度长 CJK 行兜底: 裁出放大 2 倍重识别, 文本更可信则替换。
+        """低置信度OCR结果修复: 裁图放大重识别
 
-        整行分数因个别单字被拉低时, 重识别常能救回该行
-        (沿用原框几何, 只替换文本与分数)。
+        对置信度低但包含CJK字符的长行, 裁出放大2倍后重新OCR,
+        如果新结果更可信则替换原结果。
         """
         import re as _re
 
@@ -310,6 +333,7 @@ class Pipeline:
 
     @staticmethod
     def _page_count(pdf_path):
+        """获取PDF总页数"""
         result = subprocess.run(
             ["pdfinfo", pdf_path], capture_output=True, text=True
         )
@@ -320,6 +344,7 @@ class Pipeline:
 
     @staticmethod
     def _render_page(pdf_path, page_num, dpi, out_dir):
+        """渲染PDF单页为PNG图片"""
         prefix = os.path.join(out_dir, f"p{page_num:04d}")
         subprocess.run(
             [
@@ -334,6 +359,7 @@ class Pipeline:
 
 
 def main():
+    """命令行入口: 解析参数并启动翻译"""
     import argparse
 
     import config

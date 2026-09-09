@@ -1,5 +1,12 @@
 class TextLine:
+    """文本行: 由多个OCR区域合并而成"""
+
     def __init__(self, regions):
+        """初始化文本行
+
+        Args:
+            regions: OCRRegion 列表
+        """
         self.regions = regions
         self.text = "".join(r.text for r in regions)
         self.x_min = min(r.x_min for r in regions)
@@ -10,6 +17,7 @@ class TextLine:
         self.vertical = regions[0].is_vertical() if regions else False
 
     def union_with(self, region):
+        """合并一个OCR区域到当前行"""
         self.regions.append(region)
         self.text += region.text
         self.x_min = min(self.x_min, region.x_min)
@@ -19,16 +27,19 @@ class TextLine:
         self.center_y = (self.y_min + self.y_max) // 2
 
     def size(self):
+        """获取行的宽高"""
         return self.x_max - self.x_min, self.y_max - self.y_min
 
     @property
     def text_height(self):
+        """获取文本高度 (横排=行高, 竖排=列宽)"""
         if self.vertical:
             return max(r.width for r in self.regions)
         return max(r.height for r in self.regions)
 
 
 def _overlap_ratio(a_y_min, a_y_max, b_y_min, b_y_max):
+    """计算两个区域的纵向重叠比例"""
     lo = max(a_y_min, b_y_min)
     hi = min(a_y_max, b_y_max)
     if hi <= lo:
@@ -39,6 +50,14 @@ def _overlap_ratio(a_y_min, a_y_max, b_y_min, b_y_max):
 
 
 def group_lines(regions):
+    """将OCR区域合并为文本行
+
+    Args:
+        regions: OCRRegion 列表
+
+    Returns:
+        TextLine 列表 (横排在前, 竖排在后)
+    """
     regions = sorted(regions, key=lambda r: (r.center_y, r.x_min))
     lines = []
     for region in regions:
@@ -68,6 +87,7 @@ def group_lines(regions):
 
 
 def _horizontal_gap(a, b):
+    """计算两个区域的水平间距"""
     left = max(a.x_min, b.x_min)
     right = min(a.x_max, b.x_max)
     if right >= left:
