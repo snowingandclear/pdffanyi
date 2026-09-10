@@ -323,6 +323,105 @@ class Translator:
             translated.extend(self._translate_batch(current_batch, context))
         return translated
 
+    def translate_by_sections(self, text_lines, page_height=None):
+        """按章节/段落分组翻译 (根据行间距检测段落分隔)
+
+        Args:
+            text_lines: TextLine 对象列表 (包含 text, y_min, y_max 等属性)
+            page_height: 页面高度 (用于计算相对间距)
+
+        Returns:
+            翻译后的文本列表 (与输入顺序对应)
+        """
+        if not text_lines:
+            return []
+
+        # 默认页面高度 (如果没有提供)
+        if page_height is None:
+            page_height = max(tl.y_max for tl in text_lines) + 100
+
+        # 检测章节分隔: 根据行间距判断
+        sections = []  # 章节列表, 每个章节是一组行
+        current_section = [text_lines[0]]
+
+        for i in range(1, len(text_lines)):
+            prev = text_lines[i - 1]
+            curr = text_lines[i]
+
+            # 计算行间距 (相对于行高的倍数)
+            gap = curr.y_min - prev.y_max
+            prev_height = prev.y_max - prev.y_min
+            curr_height = curr.y_max - curr.y_min
+            avg_height = max((prev_height + curr_height) // 2, 1)
+
+            # 判断是否为章节分隔:
+            # 1. 间距超过行高的 2.5 倍
+            # 2. 或者间距超过页面高度的 5%
+            is_section_break = (
+                gap > avg_height * 2.5 or
+                gap > page_height * 0.05
+            )
+
+            if is_section_break:
+                sections.append(current_section)
+                current_section = [curr]
+            else:
+                current_section.append(curr)
+
+        # 添加最后一个章节
+        sections.append(current_section)
+
+        # 翻译每个章节
+        translated = []
+        context = []  # 跨章节上下文
+
+        for section in sections:
+            # 提取章节文本
+            section_texts = [tl.text for tl in section]
+
+            # 按字符数限制拆分大章节 (避免超出API限制)
+            batch_result = self._translate_section_with_context(
+                section_texts, context
+            )
+            translated.extend(batch_result)
+
+            # 更新上下文 (保留最近翻译的内容)
+            context.extend(batch_result)
+            if len(context) > 50:  # 保留最近 50 行上下文
+                context = context[-50:]
+
+        return translated
+
+    def _translate_section_with_context(self, texts, context):
+        """翻译一个章节 (带上下文支持)"""
+        # 如果章节较短, 直接作为一批翻译
+        total_chars = sum(len(t) for t in texts)
+        if total_chars <= self.max_batch_chars and len(texts) <= self.max_batch_lines:
+            return self._translate_batch(texts, context)
+
+        # 章节较长, 按批次拆分
+        translated = []
+        current_batch = []
+        current_len = 0
+
+        for text in texts:
+            if (current_len + len(text) > self.max_batch_chars
+                    or len(current_batch) >= self.max_batch_lines) and current_batch:
+                batch_result = self._translate_batch(current_batch, context)
+                translated.extend(batch_result)
+                context.extend(batch_result)
+                if len(context) > 36:
+                    context = context[-36:]
+                current_batch = []
+                current_len = 0
+            current_batch.append(text)
+            current_len += len(text)
+
+        if current_batch:
+            translated.extend(self._translate_batch(current_batch, context))
+
+        return translated
+
     def _translate_batch(self, lines, context=None):
         """翻译一批文本 (带上下文支持)"""
         payload = "\n".join(f"{i}. {text}" for i, text in enumerate(lines))

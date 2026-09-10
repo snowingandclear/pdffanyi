@@ -178,7 +178,10 @@ class Pipeline:
                 lines = group_lines(kept)
                 if lines:
                     print(f"[page {page_no + 1}] translating {len(lines)} lines...", flush=True)
-                    translated = self.translator.translate_lines([line.text for line in lines])
+                    # 使用按章节分组翻译 (根据行间距检测段落)
+                    translated = self.translator.translate_by_sections(
+                        lines, page_height=img.height
+                    )
                     missing = sum(1 for zh in translated if not zh)
                     if missing:
                         print(
