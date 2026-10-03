@@ -29,6 +29,9 @@ repodata.json
 
 # 本地临时产物
 vcheck/
+parts3/
+partest/
+_parts/
 test_*.png
 test_*.pdf
 test_env.py

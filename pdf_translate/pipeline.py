@@ -361,6 +361,119 @@ class Pipeline:
         return prefix + ".png"
 
 
+def _run_parallel(input_path, output, pages, jobs, passthrough_args):
+    """按页分片并行翻译, 完成后合并为单一PDF。
+
+    每个分片是一个独立的本进程调用 (python -m pdf_translate.pipeline ...),
+    输出名不同 => 断点目录不同 => 互不干扰; 断点天然按片独立,
+    某片中断只需重跑该片。
+
+    Args:
+        input_path: 输入PDF路径
+        output: 最终输出PDF路径
+        pages: (start, end) 1-based闭区间, None表示全本
+        jobs: 并行进程数
+        passthrough_args: 需要透传给子进程的命令行参数列表
+
+    Returns:
+        合并后PDF路径
+    """
+    if pages:
+        start, end = pages
+    else:
+        start = 1
+        end = Pipeline._page_count(input_path)
+    total_pages = end - start + 1
+    if total_pages <= 0:
+        raise RuntimeError(f"无效页范围: {pages}")
+
+    jobs = max(1, min(jobs, total_pages))
+    part_dir = os.path.join(
+        os.path.dirname(os.path.abspath(output)) or ".", "_parts"
+    )
+    os.makedirs(part_dir, exist_ok=True)
+
+    # 均分页码, 余数分给前几个分片
+    size, rem = divmod(total_pages, jobs)
+    shards = []
+    cur = start
+    for i in range(jobs):
+        n = size + (1 if i < rem else 0)
+        if n <= 0:
+            break
+        shards.append((i, cur, cur + n - 1))
+        cur += n
+
+    print(
+        f"[parallel] {total_pages} 页 / {len(shards)} 个进程并行",
+        flush=True,
+    )
+    for i, s, e in shards:
+        print(f"  - part{i}: p{s}-p{e} ({e - s + 1} 页)", flush=True)
+
+    procs = []
+    part_files = []
+    env = dict(os.environ)
+    # tesseract 默认按核数开线程, 多进程各自开满会互相抢CPU反而更慢
+    env["OMP_THREAD_LIMIT"] = "1"
+    for i, s, e in shards:
+        part_out = os.path.join(part_dir, f"part{i}.pdf")
+        part_files.append((i, part_out))
+        cmd = [
+            sys.executable, "-m", "pdf_translate.pipeline",
+            input_path,
+            "--start", str(s),
+            "--end", str(e),
+            "-o", part_out,
+        ] + passthrough_args
+        procs.append(
+            (
+                i,
+                subprocess.Popen(
+                    cmd, env=env, cwd=os.getcwd(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors="replace",
+                ),
+            )
+        )
+
+    # 逐个收割, 保持日志按分片顺序输出
+    failed = []
+    for i, proc in procs:
+        out, _ = proc.communicate()
+        if proc.returncode != 0:
+            failed.append(i)
+            print(f"[parallel] part{i} 失败 (code={proc.returncode}):", flush=True)
+            print(out, flush=True)
+        elif out:
+            for line in out.rstrip().splitlines():
+                print(f"  [p{i}] {line}", flush=True)
+
+    if failed:
+        raise RuntimeError(
+            f"分片失败: {failed}; 可重跑同一命令仅补跑失败分片"
+        )
+
+    # 按分片序号合并, 保证页序正确
+    import pymupdf
+
+    merged = pymupdf.open()
+    for i, part_out in sorted(part_files):
+        d = pymupdf.open(part_out)
+        merged.insert_pdf(d)
+        d.close()
+    tmp_out = output + ".tmp"
+    merged.save(tmp_out)
+    merged.close()
+    os.replace(tmp_out, output)
+    print(f"\n[parallel] 合并 {len(part_files)} 个分片 -> {output}", flush=True)
+
+    # 分片产物保留: 便于断点续传; 确认无误后可手动删除 _parts/
+    return output
+
+
 def main():
     """命令行入口: 解析参数并启动翻译"""
     import argparse
@@ -407,6 +520,10 @@ def main():
     )
     parser.add_argument(
         "--opencode-url", default=None, help="opencode serve 地址"
+    )
+    parser.add_argument(
+        "--jobs", type=int, default=1,
+        help="并行进程数 (默认 1 = 串行; >1 按页分片并行后自动合并)",
     )
     args = parser.parse_args()
 
@@ -459,6 +576,38 @@ def main():
         kwargs["max_batch_chars"] = getattr(config, "LLM_MAX_BATCH_CHARS", None)
         kwargs["max_batch_lines"] = getattr(config, "LLM_MAX_BATCH_LINES", None)
     translator = Translator(**kwargs) if kwargs else None
+
+    if args.jobs > 1:
+        # 并行: 把已确定的引擎参数透传给子进程, 避免子进程重复交互选引擎
+        passthrough = ["--fresh"] if args.fresh else []
+        if args.engine:
+            passthrough += ["--engine", args.engine]
+        if args.api_key:
+            passthrough += ["--api-key", args.api_key]
+        if args.base_url:
+            passthrough += ["--base-url", args.base_url]
+        if args.model:
+            passthrough += ["--model", args.model]
+        if args.fallback:
+            passthrough += ["--fallback", args.fallback]
+        if args.opencode_url:
+            passthrough += ["--opencode-url", args.opencode_url]
+        if args.dpi != config.RENDER_DPI:
+            passthrough += ["--dpi", str(args.dpi)]
+        if args.lang != "jpn+chi_sim":
+            passthrough += ["--lang", args.lang]
+        if args.psm != 11:
+            passthrough += ["--psm", str(args.psm)]
+        if args.ocr_engine != "tesseract":
+            passthrough += ["--ocr-engine", args.ocr_engine]
+        if args.debug:
+            passthrough.append("--debug")
+        # 交互式选了引擎就把配置值固化, 保证子进程用同一引擎
+        if not args.engine and kwargs.get("engine"):
+            passthrough += ["--engine", kwargs["engine"]]
+        _run_parallel(args.input, output, pages, args.jobs, passthrough)
+        return
+
     pipeline = Pipeline(config, ocr, translator=translator)
     pipeline.run(
         args.input,
