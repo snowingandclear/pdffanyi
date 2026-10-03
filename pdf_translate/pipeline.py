@@ -9,7 +9,7 @@ from PIL import Image
 import numpy as np
 
 from pdf_translate.layout import group_lines
-from pdf_translate.ocr_engine import OCRRegion, TesseractOCR
+from pdf_translate.ocr_engine import OCRRegion, TesseractOCR, RapidOCREngine
 from pdf_translate.page_filter import PageFilter
 from pdf_translate.pdfwriter import make_pdf
 from pdf_translate.renderer import Renderer
@@ -335,7 +335,10 @@ class Pipeline:
     def _page_count(pdf_path):
         """获取PDF总页数"""
         result = subprocess.run(
-            ["pdfinfo", pdf_path], capture_output=True, text=True
+            ["pdfinfo", pdf_path],
+            capture_output=True,
+            text=True,
+            errors="replace",
         )
         for line in result.stdout.splitlines():
             if line.startswith("Pages:"):
@@ -372,6 +375,12 @@ def main():
     parser.add_argument("--dpi", type=int, default=config.RENDER_DPI)
     parser.add_argument("--lang", default="jpn+chi_sim")
     parser.add_argument("--psm", type=int, default=11)
+    parser.add_argument(
+        "--ocr-engine",
+        default="tesseract",
+        choices=["tesseract", "rapidocr"],
+        help="OCR引擎 (tesseract/rapidocr, 默认 tesseract)",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
         "--fresh", action="store_true",
@@ -412,7 +421,10 @@ def main():
     pages = None
     if args.start or args.end:
         pages = (args.start or 1, args.end or 10 ** 9)
-    ocr = TesseractOCR(lang=args.lang, psm=args.psm)
+    if args.ocr_engine == "rapidocr":
+        ocr = RapidOCREngine()
+    else:
+        ocr = TesseractOCR(lang=args.lang, psm=args.psm)
     kwargs = {}
     interactive = False
     try:

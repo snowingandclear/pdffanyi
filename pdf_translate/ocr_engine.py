@@ -6,6 +6,71 @@ from shutil import which
 import numpy as np
 
 
+class RapidOCREngine:
+    """RapidOCR OCR引擎: 基于ONNX Runtime的中日英OCR识别
+
+    使用RapidOCR(PaddleOCR ONNX版)进行文字识别,
+    无需系统安装tesseract, 纯Python+ONNX运行。
+    """
+
+    def __init__(self, det_model=None, rec_model=None, cls_model=None):
+        """初始化RapidOCR引擎
+
+        Args:
+            det_model: 检测模型路径 (None=使用默认PP-OCRv6_det_small)
+            rec_model: 识别模型路径 (None=使用默认PP-OCRv6_rec_small)
+            cls_model: 方向分类模型路径 (None=使用默认ch_ppocr_mobile_v2.0_cls_mobile)
+        """
+        self.det_model = det_model
+        self.rec_model = rec_model
+        self.cls_model = cls_model
+        self._engine = None
+
+    def _get_engine(self):
+        """延迟初始化RapidOCR引擎"""
+        if self._engine is None:
+            from rapidocr import RapidOCR
+            params = {}
+            if self.det_model:
+                params["Det.model_path"] = self.det_model
+            if self.rec_model:
+                params["Rec.model_path"] = self.rec_model
+            if self.cls_model:
+                params["Cls.model_path"] = self.cls_model
+            self._engine = RapidOCR(params=params if params else None)
+        return self._engine
+
+    def recognize(self, image_path, dpi=216):
+        """识别图片中的文字
+
+        Args:
+            image_path: 图片路径 (PNG/JPG)
+            dpi: 图片分辨率 (RapidOCR不直接使用dpi, 但保留参数兼容性)
+
+        Returns:
+            OCRRegion 列表 (识别出的所有文本区域)
+        """
+        engine = self._get_engine()
+        result = engine(image_path)
+
+        if result.boxes is None or len(result.boxes) == 0:
+            return []
+
+        regions = []
+        for box, txt, score in zip(result.boxes, result.txts, result.scores):
+            if not txt.strip():
+                continue
+            # RapidOCR返回的box格式: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            # 已经是四边形顶点顺序(左上, 右上, 右下, 左下)
+            poly = box.tolist()
+            # RapidOCR置信度是0-1, 转换为0-100以兼容OCRRegion
+            conf = float(score) * 100
+            region = OCRRegion(txt, poly, conf, words=[(txt, None, conf)])
+            regions.append(region)
+
+        return regions
+
+
 class OCRRegion:
     """OCR识别结果区域: 包含文本、位置、置信度等信息
 

@@ -18,6 +18,68 @@ def _load_env_local(path=".env.local"):
 
 _load_env_local()
 
+# 本地免安装工具 (Windows 版 tesseract / poppler)。
+# 目录结构与 conda 包一致, 即 <TOOL_DIR>/Library/bin + <TOOL_DIR>/share/tessdata。
+# 可用环境变量 TESSERACT_DIR / POPPLER_DIR 覆盖, 默认在仓库根目录内查找。
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_tool_dir(env_name, *candidates):
+    """定位免安装工具目录: 环境变量 > 仓库根目录候选路径。
+
+    候选路径支持 glob 风格 (*.xxx), 以便匹配 poppler/poppler-24.08.0 这类
+    带版本号的嵌套目录; 返回值保证含 Library/bin 或 bin 子目录。
+    """
+    import glob as _glob
+
+    env_val = os.environ.get(env_name)
+    if env_val and os.path.isdir(env_val):
+        return env_val
+    for rel in candidates:
+        for path in sorted(_glob.glob(os.path.join(_PROJECT_ROOT, rel))):
+            if not os.path.isdir(path):
+                continue
+            if os.path.isdir(os.path.join(path, "Library", "bin")) or os.path.isdir(
+                os.path.join(path, "bin")
+            ):
+                return path
+    return ""
+
+
+_TESSERACT_DIR = _find_tool_dir(
+    "TESSERACT_DIR", "tesseract-conda3", "tesseract-conda*", "tesseract"
+)
+_POPPLER_DIR = _find_tool_dir(
+    "POPPLER_DIR", "poppler/poppler-*", "poppler"
+)
+
+
+def setup_tool_paths():
+    """把本地免安装工具加入 PATH, 并设置 TESSDATA_PREFIX。
+
+    已在系统 PATH 中安装 tesseract/poppler 时不做任何改动;
+    否则使用仓库内的免安装版本, 使 Windows 免配置直接可跑。
+    """
+    path = os.environ.get("PATH", "")
+    for root in (_TESSERACT_DIR, _POPPLER_DIR):
+        if not root:
+            continue
+        for sub in ("Library/bin", "bin"):
+            d = os.path.join(root, sub)
+            if os.path.isdir(d) and d not in path:
+                path = d + os.pathsep + path
+    os.environ["PATH"] = path
+    # tessdata: tesseract <5 要求 configs/ 与语言包同在 TESSDATA_PREFIX 下
+    if "TESSDATA_PREFIX" not in os.environ and _TESSERACT_DIR:
+        for sub in ("share/tessdata", "Library/share/tessdata"):
+            d = os.path.join(_TESSERACT_DIR, sub)
+            if os.path.isdir(d):
+                os.environ["TESSDATA_PREFIX"] = d
+                break
+
+
+setup_tool_paths()
+
 # tesseract TSV 的 conf 是 0-100, 但低置信度行由 rescue/垃圾框规则
 # 兜底处理, 这里保持宽松只挡纯噪声
 OCR_CONFIDENCE_THRESHOLD = 0.55
@@ -119,11 +181,18 @@ WATERMARK_BAND_PAGES = {
 }
 
 FONT_CANDIDATES = [
+    # Windows
+    r"C:\Windows\Fonts\msyh.ttc",
+    r"C:\Windows\Fonts\msyhl.ttc",
+    r"C:\Windows\Fonts\simhei.ttf",
+    r"C:\Windows\Fonts\simsun.ttc",
+    r"C:\Windows\Fonts\Deng.ttf",
+    # Linux
     "/system/fonts/NotoSansCJK-Regular.ttc",
     "/system/fonts/NotoSansSC-Regular.otf",
-    "/system/fonts/HarmonyOS_Sans.ttf",
-    "/system/fonts/HarmonyOS_Sans_Condensed.ttf",
-    "/system/fonts/DroidSansFallback.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    # Android (Termux)
     "/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf",
 ]
 

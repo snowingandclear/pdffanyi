@@ -11,3 +11,32 @@ pdffanyi_*/
 runtest*.pdf
 runtest*.log
 .env.local
+
+# 本地免安装工具 (体积大, 按 README 自行下载放入)
+tesseract-conda*/
+tesseract/
+tesseract-*.conda
+tesseract-setup.exe
+poppler/
+poppler*.zip
+conda_pkgs/
+micromamba*
+*.tar.bz2
+pkg.tar
+pkg.tar.zst
+repodata.json
+7z*/
+
+# 本地临时产物
+vcheck/
+test_*.png
+test_*.pdf
+test_env.py
+test_rapidocr.py
+output_*.png
+*.whl
+verify*.jpg
+.omo/
+assets/
+7z-download
+7z_installer.msi
