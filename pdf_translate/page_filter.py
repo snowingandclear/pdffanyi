@@ -121,6 +121,12 @@ class PageFilter:
                 r.text = stripped
             if r.text and self._is_pure_kana_junk(r.text):
                 r.text = ""
+            # 插画/线稿纹理常被 OCR 读成短纯假名串(「まま」「まままま」),
+            # 长度不足 _is_pure_kana_junk 的 min_len=8 而漏过。补充规则:
+            # 短纯假名 + 框高偏矮(纹理误识别的典型特征, 正文行高远大于此)
+            # => 判为插画噪声。纯白纸正文的假名行行高正常, 不受影响。
+            if r.text and self._is_kana_texture_noise(r, img_arr):
+                r.text = ""
         kept = [r for r in kept if r.text]
         stats["skipped_illustration_text"] = (total - len(kept), total)
         lines = self.filter_lines(group_lines(kept), img_arr, page_no)
@@ -174,6 +180,11 @@ class PageFilter:
         )
         for line in lines:
             if self._is_watermark_text(line):
+                continue
+            # 插画/线稿内的文字优先于截图区域判定: 软件界面截图
+            # (SAI/PS 图层面板) 常嵌在插画旁, 两者背景同样杂乱,
+            # 若先判截图会把插画标注一并放行。
+            if self._is_illustration_line(line, img_arr, page_w):
                 continue
             if self._is_forced_toc_line(line, force):
                 out.append(line)
@@ -284,6 +295,104 @@ class PageFilter:
             if re.search(pat, text, re.IGNORECASE):
                 return True
         return False
+
+    def _is_kana_texture_noise(self, r, img_arr):
+        """线稿纹理误识别成的短纯假名串 (如「まま」「まままま」)。
+
+        特征组合 (须同时满足, 避免误伤真实标题):
+        1) 整段纯假名且无汉字/拉丁/数字;
+        2) 框高明显偏矮——插画纹理被 OCR 当成极小字形, 框高仅
+           10~30px, 而正常正文行高远大于此(第 10 页中位行高 67px);
+        3) OCR 置信度低——纹理误识别的得分普遍 < 70, 真实标题
+           (如「はじめに」) 通常 >= 85;
+        4) 背景杂乱——真实标题在干净纸面上。
+        """
+        text = (r.text or "").strip()
+        if not text or not self._is_pure_kana_junk(text, min_len=2):
+            return False
+        h_ratio = r.height / max(img_arr.shape[0], 1)
+        if h_ratio >= getattr(
+                self.config, "KANA_TEXTURE_MAX_H_RATIO", 0.012):
+            return False
+        if r.score >= getattr(self.config, "KANA_TEXTURE_MAX_CONF", 70):
+            return False
+        return self._bg_band_std(r, img_arr) >= getattr(
+            self.config, "ILLUSTRATION_BG_STD_MIN", 5.0
+        )
+
+    def _is_illustration_line(self, line, img_arr, page_w):
+        """插画/线稿内的文字不翻译 (灰调线稿插画检测)。
+
+        彩色插画由 _art_regions (饱和度掩码) 兜底, 但灰调线稿插画
+        (色铅笔淡彩/线稿) 饱和度极低 (实测全页均值仅 0.08, 远低于
+        ART_REGION_SAT=0.22), 完全不进掩码, 导致插画内的标注
+        (「線画」「仕上」「とまつ毛」等) 与软件界面截图里的文字
+        (「Layer40」「100%通常」) 混入正文。
+
+        判据: 文字框上下边缘带的亮度标准差。线稿/插画/UI 面板内背景
+        明暗剧烈 (实测 >=11), 白纸正文背景干净 (实测 <=2.7), 两者
+        有 4 倍以上间隔, 故阈值取中间值即可稳定区分。
+
+        仅拦窄行: 正文宽行即使背景略杂也必须翻译, 否则会误删正文。
+        宽行仍由 _art_regions / _inside_art_region 负责。
+        """
+        thr = getattr(self.config, "ILLUSTRATION_BG_STD_MIN", 5.0)
+        if (getattr(self.config, "ILLUSTRATION_BG_STD_MIN", 5.0) <= 0):
+            return False
+        line_w = line.x_max - line.x_min
+        w_limit = getattr(
+            self.config, "ILLUSTRATION_LINE_W_RATIO", self.anchor_width_ratio
+        )
+        if line_w >= w_limit * max(page_w, 1):
+            return False  # 宽行按正文处理
+        bg_std = max(
+            (self._bg_band_std(r, img_arr) for r in line.regions),
+            default=0.0,
+        )
+        if bg_std >= thr:
+            return True
+        # 插画浅色区(线稿淡彩)的杂乱度偏低(std 实测 5~7), 刚好压线漏过。
+        # 该处 OCR 常把纹理读成短纯假名串(「まま」「まままま」), 无语义,
+        # 故补充: 短纯假名 + 背景中等杂乱 + 低置信 => 判为插画噪声。
+        soft = getattr(self.config, "ILLUSTRATION_BG_STD_SOFT", 0.0)
+        if soft <= 0 or bg_std < soft or not line.regions:
+            return False
+        text = (line.text or "").strip()
+        if not text or self._is_pure_kana_junk(text, min_len=2):
+            return True
+        return max(r.score for r in line.regions) < getattr(
+            self.config, "ILLUSTRATION_LOW_CONF_MAX", 60
+        )
+
+    def _bg_band_std(self, r, img_arr, pad=None):
+        """文字框上下边缘带的亮度标准差 (代表背景明暗杂乱程度)。
+
+        取框的上/下各一条横带, 避开文字笔画本身, 只量背景。
+        """
+        if pad is None:
+            pad = getattr(self.config, "ILLUSTRATION_BG_PAD", 25)
+        h, w = img_arr.shape[:2]
+        x0, x1 = max(r.x_min - pad, 0), min(r.x_max + pad, w)
+        y0, y1 = max(r.y_min - pad, 0), min(r.y_max + pad, h)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        arr = img_arr.astype(np.float32)
+        lum = 0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2]
+        bands = []
+        # 上/下各取一条带。带宽不得超过框高, 否则窄高框(线稿纹理被
+        # 识别成的高 10px 左右的细条)会取到框外/框内正文区域,
+        # 测到的不是背景而是内容本身。
+        bh = max(1, min(pad, max(r.height, 1) // 2))
+        if y0 + bh <= y1:
+            bands.append(lum[y0:y0 + bh, x0:x1].ravel())
+        if y1 - bh >= y0:
+            bands.append(lum[y1 - bh:y1, x0:x1].ravel())
+        if not bands:
+            bands.append(lum[y0:y1, x0:x1].ravel())
+        band = np.concatenate(bands)
+        if band.size < 8:
+            return 0.0
+        return float(band.std())
 
     def _is_dialogue_bubble(self, line, img_arr, page_w):
         """人物对话气泡短句启发式：短句且所在背景复杂 → 不翻译。
