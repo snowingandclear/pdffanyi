@@ -251,6 +251,12 @@ class PageFilter:
         text = (line.text or "").strip()
         if len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text)) < 2:
             return False
+        # 面板/对话框里的说明文字是成句的(长), 而界面控件的标签本身
+        # 极短(「合成モード」「②カブラペン」「@不透明水彩」「作業名称」)——
+        # 后者是界面元素不是正文, 不该翻译。宽度不足 8% 页宽即判为标签。
+        if (line.x_max - line.x_min) < getattr(
+                self.config, "UI_REGION_MIN_TEXT_W_RATIO", 0.08) * page_w:
+            return False
         h = line.text_height
         if not (24 <= h <= 190):
             return False
@@ -755,7 +761,15 @@ class PageFilter:
         g_h_ratio = None
         if group is not None:
             g_h_ratio = group["h_med"] / max(h_med, 1)
+            # 组内已有足够多的正文宽行时, 组内窄行才可能是段内短行。
+            # 软件界面截图的标签(「合成モード」「@不透明水彩」「作業名称」)
+            # 常与正文同处一个对齐组而混过, 故要求组内存在宽行支撑。
+            group_has_body = any(
+                (l.x_max - l.x_min) >= self.text_width_ratio * max(page_w, 1)
+                for l in group["lines"]
+            )
             if (len(group["lines"]) >= 3
+                    and group_has_body
                     and g_h_ratio >= self.group_font_min
                     and group["bright_med"] >= self.group_bright_min):
                 return True
